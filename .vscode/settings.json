@@ -1,0 +1,5 @@
+{
+    "dotnet.dotnetPath": "/usr/lib",
+    "dotnet.server.path": "/usr/bin",
+    "omnisharp.sdkPath": ""
+}
