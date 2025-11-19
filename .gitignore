@@ -1,52 +1,81 @@
-# Prerequisites
-*.d
+## .NET and ASP.NET Core
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# Visual Studio cache/options
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
-# Precompiled Headers
-*.gch
-*.pch
+# NuGet Packages
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+# ASP.NET Scaffolding
+ScaffoldingReadMe.txt
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+# Database
+*.db
+*.db-shm
+*.db-wal
+database/
 
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
+# Environment files
+.env
+.env.local
+.env.*.local
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
+# Rider
+.idea/
+*.sln.iml
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Node modules (if using npm for frontend tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Publish profiles
+*.pubxml
+*.PublishSettings
+
+# Azure
+*.azurePubxml
+
+# Keep these files
+!.env.example
