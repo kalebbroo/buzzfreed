@@ -1,30 +1,22 @@
 using BuzzFreed.Web.Models;
 using BuzzFreed.Web.AI.Registry;
 using BuzzFreed.Web.AI.Models;
+using BuzzFreed.Web.Utils;
 using Newtonsoft.Json;
 using System.Collections.Concurrent;
 
-namespace BuzzFreed.Web.Services
+namespace BuzzFreed.Web.Services;
+
+public class QuizService(
+    AIProviderRegistry aiRegistry,
+    DatabaseService databaseService)
 {
-    public class QuizService
-    {
-        private readonly AIProviderRegistry _aiRegistry;
-        private readonly DatabaseService _databaseService;
-        private readonly ILogger<QuizService> _logger;
+    public readonly AIProviderRegistry AiRegistry = aiRegistry;
+    public readonly DatabaseService DatabaseService = databaseService;
 
-        // In-memory storage for active quiz sessions
-        // In production, consider using Redis or similar distributed cache
-        private static readonly ConcurrentDictionary<string, QuizSession> _activeSessions = new();
-
-        public QuizService(
-            AIProviderRegistry aiRegistry,
-            DatabaseService databaseService,
-            ILogger<QuizService> logger)
-        {
-            _aiRegistry = aiRegistry;
-            _databaseService = databaseService;
-            _logger = logger;
-        }
+    // In-memory storage for active quiz sessions
+    // In production, consider using Redis or similar distributed cache
+    public static readonly ConcurrentDictionary<string, QuizSession> ActiveSessions = new();
 
         /// <summary>
         /// Generates a new quiz with AI and creates a session for the user
@@ -33,31 +25,31 @@ namespace BuzzFreed.Web.Services
         {
             try
             {
-                _logger.LogInformation($"Generating quiz for user {userId}");
+                Logs.Info($"Generating quiz for user {userId}");
 
                 // Get LLM provider
-                var llmProvider = await _aiRegistry.GetLLMProviderAsync();
+                BuzzFreed.Web.AI.Abstractions.ILLMProvider? llmProvider = await AiRegistry.GetLLMProviderAsync();
                 if (llmProvider == null)
                 {
                     throw new Exception("No LLM provider available");
                 }
 
-                _logger.LogInformation($"Using LLM provider: {llmProvider.ProviderName}");
+                Logs.Info($"Using LLM provider: {llmProvider.ProviderName}");
 
                 // Generate or use custom topic
-                var topic = customTopic ?? await GenerateQuizTopicAsync(llmProvider);
-                _logger.LogInformation($"Quiz topic: {topic}");
+                string topic = customTopic ?? await GenerateQuizTopicAsync(llmProvider);
+                Logs.Info($"Quiz topic: {topic}");
 
                 // Generate questions
-                var questions = await GenerateQuestionsAsync(llmProvider, topic, numberOfQuestions: 6);
-                _logger.LogInformation($"Generated {questions.Count} questions");
+                List<Question> questions = await GenerateQuestionsAsync(llmProvider, topic, numberOfQuestions: 6);
+                Logs.Info($"Generated {questions.Count} questions");
 
                 // Generate result personalities
-                var personalities = await GenerateResultPersonalitiesAsync(llmProvider, topic);
-                _logger.LogInformation($"Generated {personalities.Count} personalities");
+                Dictionary<string, string> personalities = await GenerateResultPersonalitiesAsync(llmProvider, topic);
+                Logs.Info($"Generated {personalities.Count} personalities");
 
                 // Create quiz
-                var quiz = new Quiz
+                Quiz quiz = new()
                 {
                     Topic = topic,
                     Questions = questions,
@@ -65,7 +57,7 @@ namespace BuzzFreed.Web.Services
                 };
 
                 // Create session
-                var session = new QuizSession
+                QuizSession session = new()
                 {
                     UserId = userId,
                     Quiz = quiz,
@@ -75,14 +67,14 @@ namespace BuzzFreed.Web.Services
                 };
 
                 // Store session
-                _activeSessions[session.SessionId] = session;
-                _logger.LogInformation($"Created session {session.SessionId} for user {userId}");
+                ActiveSessions[session.SessionId] = session;
+                Logs.Info($"Created session {session.SessionId} for user {userId}");
 
                 return session;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error generating quiz");
+                Logs.Error($"Error generating quiz: {ex.Message}");
                 throw;
             }
         }
@@ -92,9 +84,9 @@ namespace BuzzFreed.Web.Services
         /// </summary>
         public QuizSession? SubmitAnswer(string sessionId, string answer)
         {
-            if (!_activeSessions.TryGetValue(sessionId, out var session))
+            if (!ActiveSessions.TryGetValue(sessionId, out QuizSession? session))
             {
-                _logger.LogWarning($"Session {sessionId} not found");
+                Logs.Warning($"Session {sessionId} not found");
                 return null;
             }
 
@@ -102,7 +94,7 @@ namespace BuzzFreed.Web.Services
             answer = answer.ToUpper();
             if (!new[] { "A", "B", "C", "D" }.Contains(answer))
             {
-                _logger.LogWarning($"Invalid answer: {answer}");
+                Logs.Warning($"Invalid answer: {answer}");
                 return null;
             }
 
@@ -114,7 +106,7 @@ namespace BuzzFreed.Web.Services
             if (session.CurrentQuestionIndex >= session.Quiz.Questions.Count)
             {
                 session.IsCompleted = true;
-                _logger.LogInformation($"Quiz session {sessionId} completed");
+                Logs.Info($"Quiz session {sessionId} completed");
             }
 
             return session;
@@ -125,7 +117,7 @@ namespace BuzzFreed.Web.Services
         /// </summary>
         public async Task<QuizResult> CalculateResultAsync(string sessionId, string userId, string guildId)
         {
-            if (!_activeSessions.TryGetValue(sessionId, out var session))
+            if (!ActiveSessions.TryGetValue(sessionId, out QuizSession? session))
             {
                 throw new InvalidOperationException($"Session {sessionId} not found");
             }
@@ -138,26 +130,26 @@ namespace BuzzFreed.Web.Services
             try
             {
                 // Calculate most common answer (A, B, C, or D)
-                var mostCommonAnswer = session.UserAnswers
+                string mostCommonAnswer = session.UserAnswers
                     .GroupBy(a => a)
                     .OrderByDescending(g => g.Count())
                     .First()
                     .Key;
 
-                _logger.LogInformation($"Most common answer: {mostCommonAnswer}");
+                Logs.Info($"Most common answer: {mostCommonAnswer}");
 
                 // Get personality for that answer
-                var personality = session.Quiz.ResultPersonalities.GetValueOrDefault(mostCommonAnswer, "Unknown");
+                string personality = session.Quiz.ResultPersonalities.GetValueOrDefault(mostCommonAnswer, "Unknown");
 
                 // Get LLM provider
-                var llmProvider = await _aiRegistry.GetLLMProviderAsync();
+                BuzzFreed.Web.AI.Abstractions.ILLMProvider? llmProvider = await AiRegistry.GetLLMProviderAsync();
                 if (llmProvider == null)
                 {
                     throw new Exception("No LLM provider available");
                 }
 
                 // Generate personalized description with AI
-                var description = await GenerateResultDescriptionAsync(
+                string description = await GenerateResultDescriptionAsync(
                     llmProvider,
                     session.Quiz.Topic,
                     personality,
@@ -165,7 +157,7 @@ namespace BuzzFreed.Web.Services
                 );
 
                 // Create result
-                var result = new QuizResult
+                QuizResult result = new QuizResult
                 {
                     UserId = userId,
                     DiscordGuildId = guildId,
@@ -177,16 +169,16 @@ namespace BuzzFreed.Web.Services
                 };
 
                 // Save to database
-                await _databaseService.SaveQuizResultAsync(result);
+                await DatabaseService.SaveQuizResultAsync(result);
 
                 // Clean up session
-                _activeSessions.TryRemove(sessionId, out _);
+                ActiveSessions.TryRemove(sessionId, out _);
 
                 return result;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error calculating quiz result");
+                Logs.Error($"Error calculating quiz result: {ex.Message}");
                 throw;
             }
         }
@@ -196,7 +188,7 @@ namespace BuzzFreed.Web.Services
         /// </summary>
         public QuizSession? GetSession(string sessionId)
         {
-            _activeSessions.TryGetValue(sessionId, out var session);
+            ActiveSessions.TryGetValue(sessionId, out QuizSession? session);
             return session;
         }
 
@@ -205,14 +197,14 @@ namespace BuzzFreed.Web.Services
         /// </summary>
         public async Task<List<QuizResult>> GetUserHistoryAsync(string userId, string guildId)
         {
-            return await _databaseService.GetUserQuizHistoryAsync(userId, guildId);
+            return await DatabaseService.GetUserQuizHistoryAsync(userId, guildId);
         }
 
-        // Private helper methods using AI Provider Registry
+        // Helper methods using AI Provider Registry
 
-        private async Task<string> GenerateQuizTopicAsync(BuzzFreed.Web.AI.Abstractions.ILLMProvider provider)
+        public async Task<string> GenerateQuizTopicAsync(BuzzFreed.Web.AI.Abstractions.ILLMProvider provider)
         {
-            var request = new LLMRequest
+            LLMRequest request = new LLMRequest
             {
                 Prompt = @"Generate a fun, BuzzFeed-style quiz topic. It should be light-hearted and personality-based.
 Examples: 'Which Type of Coffee Are You?', 'What Kind of Pizza Matches Your Personality?', 'Which Season Best Represents You?'
@@ -221,16 +213,16 @@ Only respond with the quiz topic, nothing else.",
                 Temperature = 0.8
             };
 
-            var response = await provider.GenerateCompletionAsync(request);
+            LLMResponse response = await provider.GenerateCompletionAsync(request);
             return response.IsSuccess ? response.Text : "What's Your Personality Type?";
         }
 
-        private async Task<List<Question>> GenerateQuestionsAsync(
+        public async Task<List<Question>> GenerateQuestionsAsync(
             BuzzFreed.Web.AI.Abstractions.ILLMProvider provider,
             string topic,
             int numberOfQuestions = 6)
         {
-            var request = new LLMRequest
+            LLMRequest request = new LLMRequest
             {
                 Prompt = $@"Create {numberOfQuestions} fun, engaging questions for a BuzzFeed-style personality quiz titled '{topic}'.
 
@@ -255,7 +247,7 @@ Only respond with the JSON array, no other text.",
                 Temperature = 0.8
             };
 
-            var response = await provider.GenerateCompletionAsync(request);
+            LLMResponse response = await provider.GenerateCompletionAsync(request);
 
             if (!response.IsSuccess)
             {
@@ -264,7 +256,7 @@ Only respond with the JSON array, no other text.",
 
             try
             {
-                var questions = JsonConvert.DeserializeObject<List<QuestionDto>>(response.Text);
+                List<QuestionDto>? questions = JsonConvert.DeserializeObject<List<QuestionDto>>(response.Text);
                 return questions?.Select(q => new Question
                 {
                     Text = q.Text,
@@ -273,16 +265,16 @@ Only respond with the JSON array, no other text.",
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error parsing questions from AI response");
+                Logs.Error($"Error parsing questions from AI response: {ex.Message}");
                 return GetFallbackQuestions(topic);
             }
         }
 
-        private async Task<Dictionary<string, string>> GenerateResultPersonalitiesAsync(
+        public async Task<Dictionary<string, string>> GenerateResultPersonalitiesAsync(
             BuzzFreed.Web.AI.Abstractions.ILLMProvider provider,
             string topic)
         {
-            var request = new LLMRequest
+            LLMRequest request = new LLMRequest
             {
                 Prompt = $@"For a BuzzFeed-style quiz titled '{topic}', create 4 distinct personality result types.
 Each result should correspond to answer patterns (mostly A's, mostly B's, mostly C's, or mostly D's).
@@ -301,7 +293,7 @@ Only respond with the JSON object, no other text.",
                 Temperature = 0.8
             };
 
-            var response = await provider.GenerateCompletionAsync(request);
+            LLMResponse response = await provider.GenerateCompletionAsync(request);
 
             if (!response.IsSuccess)
             {
@@ -315,20 +307,20 @@ Only respond with the JSON object, no other text.",
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error parsing personalities from AI response");
+                Logs.Error($"Error parsing personalities from AI response: {ex.Message}");
                 return GetFallbackPersonalities();
             }
         }
 
-        private async Task<string> GenerateResultDescriptionAsync(
+        public async Task<string> GenerateResultDescriptionAsync(
             BuzzFreed.Web.AI.Abstractions.ILLMProvider provider,
             string topic,
             string personality,
             List<string> userAnswers)
         {
-            var answerSummary = string.Join(", ", userAnswers.GroupBy(a => a).Select(g => $"{g.Count()} {g.Key}'s"));
+            string answerSummary = string.Join(", ", userAnswers.GroupBy(a => a).Select(g => $"{g.Count()} {g.Key}'s"));
 
-            var request = new LLMRequest
+            LLMRequest request = new LLMRequest
             {
                 Prompt = $@"You are writing a fun, BuzzFeed-style quiz result.
 Quiz topic: '{topic}'
@@ -343,14 +335,14 @@ Only respond with the description text, nothing else.",
                 SystemMessage = "You are a creative assistant that helps create fun, engaging BuzzFeed-style quiz content."
             };
 
-            var response = await provider.GenerateCompletionAsync(request);
+            LLMResponse response = await provider.GenerateCompletionAsync(request);
             return response.IsSuccess ? response.Text :
                 $"You're a {personality}! You have a unique and interesting personality that sets you apart from the crowd.";
         }
 
         // Fallback methods
 
-        private List<Question> GetFallbackQuestions(string topic)
+        public List<Question> GetFallbackQuestions(string topic)
         {
             return new List<Question>
             {
@@ -379,7 +371,7 @@ Only respond with the description text, nothing else.",
             };
         }
 
-        private Dictionary<string, string> GetFallbackPersonalities()
+        public Dictionary<string, string> GetFallbackPersonalities()
         {
             return new Dictionary<string, string>
             {
@@ -391,7 +383,7 @@ Only respond with the description text, nothing else.",
         }
 
         // DTO for deserializing question JSON
-        private class QuestionDto
+        public class QuestionDto
         {
             [JsonProperty("text")]
             public string Text { get; set; } = string.Empty;

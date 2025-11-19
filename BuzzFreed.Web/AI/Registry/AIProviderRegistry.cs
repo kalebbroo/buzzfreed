@@ -1,174 +1,168 @@
 using BuzzFreed.Web.AI.Abstractions;
 using BuzzFreed.Web.AI.Models;
+using BuzzFreed.Web.Utils;
 
-namespace BuzzFreed.Web.AI.Registry
+namespace BuzzFreed.Web.AI.Registry;
+
+/// <summary>
+/// Central registry for managing all AI providers
+/// </summary>
+public class AIProviderRegistry(IConfiguration configuration)
 {
-    /// <summary>
-    /// Central registry for managing all AI providers
-    /// </summary>
-    public class AIProviderRegistry
+    public readonly AIProvidersConfig Config = InitializeConfig(configuration);
+    public readonly Dictionary<string, ILLMProvider> LLMProviders = new();
+    public readonly Dictionary<string, IImageProvider> ImageProviders = new();
+
+    public static AIProvidersConfig InitializeConfig(IConfiguration configuration)
     {
-        private readonly ILogger<AIProviderRegistry> _logger;
-        private readonly AIProvidersConfig _config;
-        private readonly Dictionary<string, ILLMProvider> _llmProviders;
-        private readonly Dictionary<string, IImageProvider> _imageProviders;
+        AIProvidersConfig config = new();
+        configuration.GetSection("AI:Providers").Bind(config);
+        return config;
+    }
 
-        public AIProviderRegistry(
-            ILogger<AIProviderRegistry> logger,
-            IConfiguration configuration)
+    /// <summary>
+    /// Register an LLM provider
+    /// </summary>
+    public void RegisterLLMProvider(ILLMProvider provider)
+    {
+        LLMProviders[provider.ProviderId] = provider;
+        Logs.Init($"Registered LLM provider: {provider.ProviderName} ({provider.ProviderId})");
+    }
+
+    /// <summary>
+    /// Register an Image provider
+    /// </summary>
+    public void RegisterImageProvider(IImageProvider provider)
+    {
+        ImageProviders[provider.ProviderId] = provider;
+        Logs.Init($"Registered Image provider: {provider.ProviderName} ({provider.ProviderId})");
+    }
+
+    /// <summary>
+    /// Get best available LLM provider
+    /// </summary>
+    public async Task<ILLMProvider?> GetLLMProviderAsync(string? preferredProviderId = null)
+    {
+        // Try preferred provider first
+        if (!string.IsNullOrEmpty(preferredProviderId) && LLMProviders.ContainsKey(preferredProviderId))
         {
-            _logger = logger;
-            _config = new AIProvidersConfig();
-            configuration.GetSection("AI:Providers").Bind(_config);
-
-            _llmProviders = new Dictionary<string, ILLMProvider>();
-            _imageProviders = new Dictionary<string, IImageProvider>();
-        }
-
-        /// <summary>
-        /// Register an LLM provider
-        /// </summary>
-        public void RegisterLLMProvider(ILLMProvider provider)
-        {
-            _llmProviders[provider.ProviderId] = provider;
-            _logger.LogInformation($"Registered LLM provider: {provider.ProviderName} ({provider.ProviderId})");
-        }
-
-        /// <summary>
-        /// Register an Image provider
-        /// </summary>
-        public void RegisterImageProvider(IImageProvider provider)
-        {
-            _imageProviders[provider.ProviderId] = provider;
-            _logger.LogInformation($"Registered Image provider: {provider.ProviderName} ({provider.ProviderId})");
-        }
-
-        /// <summary>
-        /// Get best available LLM provider
-        /// </summary>
-        public async Task<ILLMProvider?> GetLLMProviderAsync(string? preferredProviderId = null)
-        {
-            // Try preferred provider first
-            if (!string.IsNullOrEmpty(preferredProviderId) && _llmProviders.ContainsKey(preferredProviderId))
+            ILLMProvider preferred = LLMProviders[preferredProviderId];
+            if (await preferred.IsAvailableAsync())
             {
-                var preferred = _llmProviders[preferredProviderId];
-                if (await preferred.IsAvailableAsync())
+                return preferred;
+            }
+        }
+
+        // Try default provider
+        if (LLMProviders.ContainsKey(Config.DefaultLLMProvider))
+        {
+            ILLMProvider defaultProvider = LLMProviders[Config.DefaultLLMProvider];
+            if (await defaultProvider.IsAvailableAsync())
+            {
+                return defaultProvider;
+            }
+        }
+
+        // Fallback: try any available provider by priority
+        if (Config.EnableFallback)
+        {
+            List<ILLMProvider> sortedProviders = LLMProviders.Values
+                .OrderByDescending(p => GetProviderPriority(p.ProviderId))
+                .ToList();
+
+            foreach (ILLMProvider provider in sortedProviders)
+            {
+                if (await provider.IsAvailableAsync())
                 {
-                    return preferred;
+                    Logs.Warning($"Using fallback LLM provider: {provider.ProviderName}");
+                    return provider;
                 }
             }
-
-            // Try default provider
-            if (_llmProviders.ContainsKey(_config.DefaultLLMProvider))
-            {
-                var defaultProvider = _llmProviders[_config.DefaultLLMProvider];
-                if (await defaultProvider.IsAvailableAsync())
-                {
-                    return defaultProvider;
-                }
-            }
-
-            // Fallback: try any available provider by priority
-            if (_config.EnableFallback)
-            {
-                var sortedProviders = _llmProviders.Values
-                    .OrderByDescending(p => GetProviderPriority(p.ProviderId))
-                    .ToList();
-
-                foreach (var provider in sortedProviders)
-                {
-                    if (await provider.IsAvailableAsync())
-                    {
-                        _logger.LogWarning($"Using fallback LLM provider: {provider.ProviderName}");
-                        return provider;
-                    }
-                }
-            }
-
-            _logger.LogError("No available LLM providers found");
-            return null;
         }
 
-        /// <summary>
-        /// Get best available Image provider
-        /// </summary>
-        public async Task<IImageProvider?> GetImageProviderAsync(string? preferredProviderId = null)
+        Logs.Error("No available LLM providers found");
+        return null;
+    }
+
+    /// <summary>
+    /// Get best available Image provider
+    /// </summary>
+    public async Task<IImageProvider?> GetImageProviderAsync(string? preferredProviderId = null)
+    {
+        // Try preferred provider first
+        if (!string.IsNullOrEmpty(preferredProviderId) && ImageProviders.ContainsKey(preferredProviderId))
         {
-            // Try preferred provider first
-            if (!string.IsNullOrEmpty(preferredProviderId) && _imageProviders.ContainsKey(preferredProviderId))
+            IImageProvider preferred = ImageProviders[preferredProviderId];
+            if (await preferred.IsAvailableAsync())
             {
-                var preferred = _imageProviders[preferredProviderId];
-                if (await preferred.IsAvailableAsync())
+                return preferred;
+            }
+        }
+
+        // Try default provider
+        if (ImageProviders.ContainsKey(Config.DefaultImageProvider))
+        {
+            IImageProvider defaultProvider = ImageProviders[Config.DefaultImageProvider];
+            if (await defaultProvider.IsAvailableAsync())
+            {
+                return defaultProvider;
+            }
+        }
+
+        // Fallback: try any available provider by priority
+        if (Config.EnableFallback)
+        {
+            List<IImageProvider> sortedProviders = ImageProviders.Values
+                .OrderByDescending(p => GetProviderPriority(p.ProviderId))
+                .ToList();
+
+            foreach (IImageProvider provider in sortedProviders)
+            {
+                if (await provider.IsAvailableAsync())
                 {
-                    return preferred;
+                    Logs.Warning($"Using fallback Image provider: {provider.ProviderName}");
+                    return provider;
                 }
             }
-
-            // Try default provider
-            if (_imageProviders.ContainsKey(_config.DefaultImageProvider))
-            {
-                var defaultProvider = _imageProviders[_config.DefaultImageProvider];
-                if (await defaultProvider.IsAvailableAsync())
-                {
-                    return defaultProvider;
-                }
-            }
-
-            // Fallback: try any available provider by priority
-            if (_config.EnableFallback)
-            {
-                var sortedProviders = _imageProviders.Values
-                    .OrderByDescending(p => GetProviderPriority(p.ProviderId))
-                    .ToList();
-
-                foreach (var provider in sortedProviders)
-                {
-                    if (await provider.IsAvailableAsync())
-                    {
-                        _logger.LogWarning($"Using fallback Image provider: {provider.ProviderName}");
-                        return provider;
-                    }
-                }
-            }
-
-            _logger.LogError("No available Image providers found");
-            return null;
         }
 
-        /// <summary>
-        /// Get all registered LLM providers
-        /// </summary>
-        public IEnumerable<ILLMProvider> GetAllLLMProviders() => _llmProviders.Values;
+        Logs.Error("No available Image providers found");
+        return null;
+    }
 
-        /// <summary>
-        /// Get all registered Image providers
-        /// </summary>
-        public IEnumerable<IImageProvider> GetAllImageProviders() => _imageProviders.Values;
+    /// <summary>
+    /// Get all registered LLM providers
+    /// </summary>
+    public IEnumerable<ILLMProvider> GetAllLLMProviders() => LLMProviders.Values;
 
-        /// <summary>
-        /// Get provider configuration
-        /// </summary>
-        public AIProviderConfig? GetProviderConfig(string providerId)
-        {
-            return _config.Providers.FirstOrDefault(p => p.ProviderId == providerId);
-        }
+    /// <summary>
+    /// Get all registered Image providers
+    /// </summary>
+    public IEnumerable<IImageProvider> GetAllImageProviders() => ImageProviders.Values;
 
-        /// <summary>
-        /// Get provider priority from config
-        /// </summary>
-        private int GetProviderPriority(string providerId)
-        {
-            var config = GetProviderConfig(providerId);
-            return config?.Priority ?? 0;
-        }
+    /// <summary>
+    /// Get provider configuration
+    /// </summary>
+    public AIProviderConfig? GetProviderConfig(string providerId)
+    {
+        return Config.Providers.FirstOrDefault(p => p.ProviderId == providerId);
+    }
 
-        /// <summary>
-        /// Check if a provider is enabled
-        /// </summary>
-        public bool IsProviderEnabled(string providerId)
-        {
-            var config = GetProviderConfig(providerId);
-            return config?.Enabled ?? false;
-        }
+    /// <summary>
+    /// Get provider priority from config
+    /// </summary>
+    public int GetProviderPriority(string providerId)
+    {
+        AIProviderConfig? config = GetProviderConfig(providerId);
+        return config?.Priority ?? 0;
+    }
+
+    /// <summary>
+    /// Check if a provider is enabled
+    /// </summary>
+    public bool IsProviderEnabled(string providerId)
+    {
+        AIProviderConfig? config = GetProviderConfig(providerId);
+        return config?.Enabled ?? false;
     }
 }

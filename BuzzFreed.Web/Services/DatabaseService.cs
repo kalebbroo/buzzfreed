@@ -1,171 +1,171 @@
 using Microsoft.Data.Sqlite;
 using BuzzFreed.Web.Models;
+using BuzzFreed.Web.Utils;
 using Newtonsoft.Json;
 
-namespace BuzzFreed.Web.Services
+namespace BuzzFreed.Web.Services;
+
+public class DatabaseService(IConfiguration configuration)
 {
-    public class DatabaseService
+    public readonly string ConnectionString = InitializeConnectionString(configuration);
+
+    public static string InitializeConnectionString(IConfiguration configuration)
     {
-        private readonly string _connectionString;
-        private readonly ILogger<DatabaseService> _logger;
+        string dbPath = configuration["DatabasePath"] ?? Path.Combine(Directory.GetCurrentDirectory(), "database", "buzzfreed.db");
 
-        public DatabaseService(IConfiguration configuration, ILogger<DatabaseService> logger)
+        // Ensure directory exists
+        string? dbDirectory = Path.GetDirectoryName(dbPath);
+        if (!string.IsNullOrEmpty(dbDirectory))
         {
-            var dbPath = configuration["DatabasePath"] ?? Path.Combine(Directory.GetCurrentDirectory(), "database", "buzzfreed.db");
-
-            // Ensure directory exists
-            var dbDirectory = Path.GetDirectoryName(dbPath);
-            if (!string.IsNullOrEmpty(dbDirectory))
-            {
-                Directory.CreateDirectory(dbDirectory);
-            }
-
-            _connectionString = $"Data Source={dbPath}";
-            _logger = logger;
+            Directory.CreateDirectory(dbDirectory);
         }
 
-        public async Task InitializeDatabaseAsync()
+        return $"Data Source={dbPath}";
+    }
+
+    public async Task InitializeDatabaseAsync()
+    {
+        try
         {
-            try
-            {
-                using var connection = new SqliteConnection(_connectionString);
-                await connection.OpenAsync();
+            using SqliteConnection connection = new(ConnectionString);
+            await connection.OpenAsync();
 
-                var tableCommand = @"CREATE TABLE IF NOT EXISTS UserQuizzes (
-                    UserId TEXT NOT NULL,
-                    DiscordGuildId TEXT NOT NULL,
-                    QuizId TEXT NOT NULL,
-                    QuizTopic TEXT NOT NULL,
-                    UserAnswers TEXT NOT NULL,
-                    ResultPersonality TEXT NOT NULL,
-                    ResultDescription TEXT NOT NULL,
-                    Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(UserId, DiscordGuildId, QuizId)
-                );";
+            string tableCommand = @"CREATE TABLE IF NOT EXISTS UserQuizzes (
+                UserId TEXT NOT NULL,
+                DiscordGuildId TEXT NOT NULL,
+                QuizId TEXT NOT NULL,
+                QuizTopic TEXT NOT NULL,
+                UserAnswers TEXT NOT NULL,
+                ResultPersonality TEXT NOT NULL,
+                ResultDescription TEXT NOT NULL,
+                Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(UserId, DiscordGuildId, QuizId)
+            );";
 
-                var command = new SqliteCommand(tableCommand, connection);
-                await command.ExecuteNonQueryAsync();
+            SqliteCommand command = new(tableCommand, connection);
+            await command.ExecuteNonQueryAsync();
 
-                _logger.LogInformation("Database initialized successfully");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error initializing database");
-                throw;
-            }
+            Logs.Init("Database initialized successfully");
         }
-
-        public async Task SaveQuizResultAsync(QuizResult result)
+        catch (Exception ex)
         {
-            try
-            {
-                using var connection = new SqliteConnection(_connectionString);
-                await connection.OpenAsync();
-
-                var insertCommand = @"INSERT OR REPLACE INTO UserQuizzes
-                    (UserId, DiscordGuildId, QuizId, QuizTopic, UserAnswers, ResultPersonality, ResultDescription, Timestamp)
-                    VALUES (@UserId, @DiscordGuildId, @QuizId, @QuizTopic, @UserAnswers, @ResultPersonality, @ResultDescription, @Timestamp);";
-
-                var command = new SqliteCommand(insertCommand, connection);
-                command.Parameters.AddWithValue("@UserId", result.UserId);
-                command.Parameters.AddWithValue("@DiscordGuildId", result.DiscordGuildId);
-                command.Parameters.AddWithValue("@QuizId", result.QuizId);
-                command.Parameters.AddWithValue("@QuizTopic", result.QuizTopic);
-                command.Parameters.AddWithValue("@UserAnswers", JsonConvert.SerializeObject(result.UserAnswers));
-                command.Parameters.AddWithValue("@ResultPersonality", result.ResultPersonality);
-                command.Parameters.AddWithValue("@ResultDescription", result.ResultDescription);
-                command.Parameters.AddWithValue("@Timestamp", result.Timestamp);
-
-                await command.ExecuteNonQueryAsync();
-                _logger.LogInformation($"Quiz result saved for user {result.UserId}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error saving quiz result");
-                throw;
-            }
+            Logs.Error($"Error initializing database: {ex.Message}");
+            throw;
         }
+    }
 
-        public async Task<List<QuizResult>> GetUserQuizHistoryAsync(string userId, string guildId)
+    public async Task SaveQuizResultAsync(QuizResult result)
+    {
+        try
         {
-            var results = new List<QuizResult>();
+            using SqliteConnection connection = new(ConnectionString);
+            await connection.OpenAsync();
 
-            try
+            string insertCommand = @"INSERT OR REPLACE INTO UserQuizzes
+                (UserId, DiscordGuildId, QuizId, QuizTopic, UserAnswers, ResultPersonality, ResultDescription, Timestamp)
+                VALUES (@UserId, @DiscordGuildId, @QuizId, @QuizTopic, @UserAnswers, @ResultPersonality, @ResultDescription, @Timestamp);";
+
+            SqliteCommand command = new(insertCommand, connection);
+            command.Parameters.AddWithValue("@UserId", result.UserId);
+            command.Parameters.AddWithValue("@DiscordGuildId", result.DiscordGuildId);
+            command.Parameters.AddWithValue("@QuizId", result.QuizId);
+            command.Parameters.AddWithValue("@QuizTopic", result.QuizTopic);
+            command.Parameters.AddWithValue("@UserAnswers", JsonConvert.SerializeObject(result.UserAnswers));
+            command.Parameters.AddWithValue("@ResultPersonality", result.ResultPersonality);
+            command.Parameters.AddWithValue("@ResultDescription", result.ResultDescription);
+            command.Parameters.AddWithValue("@Timestamp", result.Timestamp);
+
+            await command.ExecuteNonQueryAsync();
+            Logs.Info($"Quiz result saved for user {result.UserId}");
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error saving quiz result: {ex.Message}");
+            throw;
+        }
+    }
+
+    public async Task<List<QuizResult>> GetUserQuizHistoryAsync(string userId, string guildId)
+    {
+        List<QuizResult> results = new();
+
+        try
+        {
+            using SqliteConnection connection = new(ConnectionString);
+            await connection.OpenAsync();
+
+            string selectCommand = @"SELECT * FROM UserQuizzes
+                WHERE UserId = @UserId AND DiscordGuildId = @DiscordGuildId
+                ORDER BY Timestamp DESC;";
+
+            SqliteCommand command = new(selectCommand, connection);
+            command.Parameters.AddWithValue("@UserId", userId);
+            command.Parameters.AddWithValue("@DiscordGuildId", guildId);
+
+            using SqliteDataReader reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                using var connection = new SqliteConnection(_connectionString);
-                await connection.OpenAsync();
-
-                var selectCommand = @"SELECT * FROM UserQuizzes
-                    WHERE UserId = @UserId AND DiscordGuildId = @DiscordGuildId
-                    ORDER BY Timestamp DESC;";
-
-                var command = new SqliteCommand(selectCommand, connection);
-                command.Parameters.AddWithValue("@UserId", userId);
-                command.Parameters.AddWithValue("@DiscordGuildId", guildId);
-
-                using var reader = await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                List<string>? deserializedAnswers = JsonConvert.DeserializeObject<List<string>>(reader.GetString(4));
+                results.Add(new QuizResult
                 {
-                    results.Add(new QuizResult
-                    {
-                        UserId = reader.GetString(0),
-                        DiscordGuildId = reader.GetString(1),
-                        QuizId = reader.GetString(2),
-                        QuizTopic = reader.GetString(3),
-                        UserAnswers = JsonConvert.DeserializeObject<List<string>>(reader.GetString(4)) ?? new List<string>(),
-                        ResultPersonality = reader.GetString(5),
-                        ResultDescription = reader.GetString(6),
-                        Timestamp = reader.GetDateTime(7)
-                    });
-                }
+                    UserId = reader.GetString(0),
+                    DiscordGuildId = reader.GetString(1),
+                    QuizId = reader.GetString(2),
+                    QuizTopic = reader.GetString(3),
+                    UserAnswers = deserializedAnswers ?? new List<string>(),
+                    ResultPersonality = reader.GetString(5),
+                    ResultDescription = reader.GetString(6),
+                    Timestamp = reader.GetDateTime(7)
+                });
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving quiz history");
-                throw;
-            }
-
-            return results;
         }
-
-        public async Task<QuizResult?> GetQuizResultAsync(string userId, string guildId, string quizId)
+        catch (Exception ex)
         {
-            try
-            {
-                using var connection = new SqliteConnection(_connectionString);
-                await connection.OpenAsync();
-
-                var selectCommand = @"SELECT * FROM UserQuizzes
-                    WHERE UserId = @UserId AND DiscordGuildId = @DiscordGuildId AND QuizId = @QuizId;";
-
-                var command = new SqliteCommand(selectCommand, connection);
-                command.Parameters.AddWithValue("@UserId", userId);
-                command.Parameters.AddWithValue("@DiscordGuildId", guildId);
-                command.Parameters.AddWithValue("@QuizId", quizId);
-
-                using var reader = await command.ExecuteReaderAsync();
-                if (await reader.ReadAsync())
-                {
-                    return new QuizResult
-                    {
-                        UserId = reader.GetString(0),
-                        DiscordGuildId = reader.GetString(1),
-                        QuizId = reader.GetString(2),
-                        QuizTopic = reader.GetString(3),
-                        UserAnswers = JsonConvert.DeserializeObject<List<string>>(reader.GetString(4)) ?? new List<string>(),
-                        ResultPersonality = reader.GetString(5),
-                        ResultDescription = reader.GetString(6),
-                        Timestamp = reader.GetDateTime(7)
-                    };
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving quiz result");
-                throw;
-            }
-
-            return null;
+            Logs.Error($"Error retrieving quiz history: {ex.Message}");
+            throw;
         }
+
+        return results;
+    }
+
+    public async Task<QuizResult?> GetQuizResultAsync(string userId, string guildId, string quizId)
+    {
+        try
+        {
+            using SqliteConnection connection = new(ConnectionString);
+            await connection.OpenAsync();
+
+            string selectCommand = @"SELECT * FROM UserQuizzes
+                WHERE UserId = @UserId AND DiscordGuildId = @DiscordGuildId AND QuizId = @QuizId;";
+
+            SqliteCommand command = new(selectCommand, connection);
+            command.Parameters.AddWithValue("@UserId", userId);
+            command.Parameters.AddWithValue("@DiscordGuildId", guildId);
+            command.Parameters.AddWithValue("@QuizId", quizId);
+
+            using SqliteDataReader reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                List<string>? deserializedAnswers = JsonConvert.DeserializeObject<List<string>>(reader.GetString(4));
+                return new QuizResult
+                {
+                    UserId = reader.GetString(0),
+                    DiscordGuildId = reader.GetString(1),
+                    QuizId = reader.GetString(2),
+                    QuizTopic = reader.GetString(3),
+                    UserAnswers = deserializedAnswers ?? new List<string>(),
+                    ResultPersonality = reader.GetString(5),
+                    ResultDescription = reader.GetString(6),
+                    Timestamp = reader.GetDateTime(7)
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error retrieving quiz result: {ex.Message}");
+            throw;
+        }
+
+        return null;
     }
 }

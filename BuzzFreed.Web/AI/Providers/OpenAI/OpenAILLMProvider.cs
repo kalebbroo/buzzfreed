@@ -4,147 +4,136 @@ using Newtonsoft.Json.Linq;
 using BuzzFreed.Web.AI.Abstractions;
 using BuzzFreed.Web.AI.Models;
 using BuzzFreed.Web.AI.Registry;
+using BuzzFreed.Web.Utils;
 
-namespace BuzzFreed.Web.AI.Providers.OpenAI
+namespace BuzzFreed.Web.AI.Providers.OpenAI;
+
+/// <summary>
+/// OpenAI LLM Provider (GPT-4, GPT-3.5, etc.)
+/// </summary>
+public class OpenAILLMProvider(AIProviderRegistry registry) : ILLMProvider
 {
-    /// <summary>
-    /// OpenAI LLM Provider (GPT-4, GPT-3.5, etc.)
-    /// </summary>
-    public class OpenAILLMProvider : ILLMProvider
+    public readonly HttpClient HttpClient = new();
+    public readonly AIProviderConfig Config = registry.GetProviderConfig("openai") ?? new AIProviderConfig();
+    public const string ApiEndpoint = "https://api.openai.com/v1/chat/completions";
+
+    public string ProviderId => "openai";
+    public string ProviderName => "OpenAI";
+    public ProviderType Type => ProviderType.LLM;
+
+    public List<string> SupportedModels => new()
     {
-        private readonly HttpClient _httpClient;
-        private readonly ILogger<OpenAILLMProvider> _logger;
-        private readonly AIProviderConfig _config;
-        private const string ApiEndpoint = "https://api.openai.com/v1/chat/completions";
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo"
+    };
 
-        public string ProviderId => "openai";
-        public string ProviderName => "OpenAI";
-        public ProviderType Type => ProviderType.LLM;
-
-        public List<string> SupportedModels => new List<string>
+    public Task<bool> IsAvailableAsync()
+    {
+        bool isAvailable = !string.IsNullOrEmpty(Config.ApiKey) && Config.Enabled;
+        if (isAvailable && !HttpClient.DefaultRequestHeaders.Contains("Authorization"))
         {
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-4",
-            "gpt-3.5-turbo"
+            HttpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {Config.ApiKey}");
+            HttpClient.Timeout = TimeSpan.FromSeconds(Config.TimeoutSeconds);
+        }
+        return Task.FromResult(isAvailable);
+    }
+
+    public ProviderCapabilities GetCapabilities()
+    {
+        return new ProviderCapabilities
+        {
+            SupportsStreaming = true,
+            SupportsChat = true,
+            SupportsImages = false,
+            SupportsVision = true,
+            SupportsFunctionCalling = true,
+            MaxTokens = 128000, // gpt-4o context window
+            SupportedLanguages = new List<string> { "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh" }
         };
+    }
 
-        public OpenAILLMProvider(
-            ILogger<OpenAILLMProvider> logger,
-            AIProviderRegistry registry)
+    public async Task<LLMResponse> GenerateCompletionAsync(LLMRequest request, CancellationToken cancellationToken = default)
+    {
+        List<ChatMessage> messages = new();
+
+        if (!string.IsNullOrEmpty(request.SystemMessage))
         {
-            _logger = logger;
-            _httpClient = new HttpClient();
-            _config = registry.GetProviderConfig(ProviderId) ?? new AIProviderConfig();
-
-            // Setup HTTP client
-            if (!string.IsNullOrEmpty(_config.ApiKey))
-            {
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_config.ApiKey}");
-            }
-            _httpClient.Timeout = TimeSpan.FromSeconds(_config.TimeoutSeconds);
+            messages.Add(ChatMessage.System(request.SystemMessage));
         }
 
-        public async Task<bool> IsAvailableAsync()
-        {
-            return !string.IsNullOrEmpty(_config.ApiKey) && _config.Enabled;
-        }
+        messages.Add(ChatMessage.User(request.Prompt));
 
-        public ProviderCapabilities GetCapabilities()
+        return await GenerateChatCompletionAsync(messages, request, cancellationToken);
+    }
+
+    public async Task<LLMResponse> GenerateChatCompletionAsync(
+        List<ChatMessage> messages,
+        LLMRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
         {
-            return new ProviderCapabilities
+            string model = request.Model ?? Config.DefaultModel ?? "gpt-4o-mini";
+
+            object payload = new
             {
-                SupportsStreaming = true,
-                SupportsChat = true,
-                SupportsImages = false,
-                SupportsVision = true,
-                SupportsFunctionCalling = true,
-                MaxTokens = 128000, // gpt-4o context window
-                SupportedLanguages = new List<string> { "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh" }
+                model = model,
+                messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
+                max_tokens = request.MaxTokens,
+                temperature = request.Temperature,
+                top_p = request.TopP,
+                frequency_penalty = request.FrequencyPenalty,
+                presence_penalty = request.PresencePenalty,
+                stop = request.StopSequences
             };
-        }
 
-        public async Task<LLMResponse> GenerateCompletionAsync(LLMRequest request, CancellationToken cancellationToken = default)
-        {
-            var messages = new List<ChatMessage>();
-
-            if (!string.IsNullOrEmpty(request.SystemMessage))
+            string payloadString = JsonConvert.SerializeObject(payload, new JsonSerializerSettings
             {
-                messages.Add(ChatMessage.System(request.SystemMessage));
-            }
+                NullValueHandling = NullValueHandling.Ignore
+            });
 
-            messages.Add(ChatMessage.User(request.Prompt));
+            StringContent httpContent = new(payloadString, Encoding.UTF8, "application/json");
 
-            return await GenerateChatCompletionAsync(messages, request, cancellationToken);
-        }
+            Logs.Debug($"Calling OpenAI API with model: {model}");
+            HttpResponseMessage response = await HttpClient.PostAsync(ApiEndpoint, httpContent, cancellationToken);
+            string responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
 
-        public async Task<LLMResponse> GenerateChatCompletionAsync(
-            List<ChatMessage> messages,
-            LLMRequest request,
-            CancellationToken cancellationToken = default)
-        {
-            try
+            if (!response.IsSuccessStatusCode)
             {
-                var model = request.Model ?? _config.DefaultModel ?? "gpt-4o-mini";
-
-                var payload = new
-                {
-                    model = model,
-                    messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
-                    max_tokens = request.MaxTokens,
-                    temperature = request.Temperature,
-                    top_p = request.TopP,
-                    frequency_penalty = request.FrequencyPenalty,
-                    presence_penalty = request.PresencePenalty,
-                    stop = request.StopSequences
-                };
-
-                var payloadString = JsonConvert.SerializeObject(payload, new JsonSerializerSettings
-                {
-                    NullValueHandling = NullValueHandling.Ignore
-                });
-
-                var httpContent = new StringContent(payloadString, Encoding.UTF8, "application/json");
-
-                _logger.LogDebug($"Calling OpenAI API with model: {model}");
-                var response = await _httpClient.PostAsync(ApiEndpoint, httpContent, cancellationToken);
-                var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogError($"OpenAI API error: {response.StatusCode} - {responseContent}");
-                    return new LLMResponse
-                    {
-                        Error = $"OpenAI API error: {response.StatusCode}",
-                        Provider = ProviderName
-                    };
-                }
-
-                var responseObject = JObject.Parse(responseContent);
-                var messageContent = responseObject["choices"]?[0]?["message"]?["content"]?.ToString()?.Trim();
-                var finishReason = responseObject["choices"]?[0]?["finish_reason"]?.ToString();
-                var usage = responseObject["usage"];
-
+                Logs.Error($"OpenAI API error: {response.StatusCode} - {responseContent}");
                 return new LLMResponse
                 {
-                    Text = messageContent ?? string.Empty,
-                    Model = model,
-                    Provider = ProviderName,
-                    TokensUsed = usage?["total_tokens"]?.Value<int>() ?? 0,
-                    FinishReason = finishReason,
-                    IsFallback = false
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error calling OpenAI API");
-                return new LLMResponse
-                {
-                    Error = ex.Message,
+                    Error = $"OpenAI API error: {response.StatusCode}",
                     Provider = ProviderName
                 };
             }
+
+            JObject responseObject = JObject.Parse(responseContent);
+            string? messageContent = responseObject["choices"]?[0]?["message"]?["content"]?.ToString()?.Trim();
+            string? finishReason = responseObject["choices"]?[0]?["finish_reason"]?.ToString();
+            JToken? usage = responseObject["usage"];
+
+            return new LLMResponse
+            {
+                Text = messageContent ?? string.Empty,
+                Model = model,
+                Provider = ProviderName,
+                TokensUsed = usage?["total_tokens"]?.Value<int>() ?? 0,
+                FinishReason = finishReason,
+                IsFallback = false
+            };
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error calling OpenAI API: {ex.Message}");
+            return new LLMResponse
+            {
+                Error = ex.Message,
+                Provider = ProviderName
+            };
         }
     }
 }

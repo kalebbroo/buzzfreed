@@ -2,9 +2,14 @@ using BuzzFreed.Web.Services;
 using BuzzFreed.Web.AI.Registry;
 using BuzzFreed.Web.AI.Providers.OpenAI;
 using BuzzFreed.Web.AI.Providers.SwarmUI;
+using BuzzFreed.Web.Utils;
 using DotNetEnv;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Initialize Logs
+Logs.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "logs", "buzzfreed.log");
+Directory.CreateDirectory(Path.GetDirectoryName(Logs.LogFilePath)!);
 
 // Load environment variables from .env file
 Env.Load();
@@ -41,30 +46,25 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Add logging
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-builder.Logging.AddDebug();
-
-var app = builder.Build();
+WebApplication app = builder.Build();
 
 // Initialize AI Provider Registry and register providers
-using (var scope = app.Services.CreateScope())
+using (IServiceScope scope = app.Services.CreateScope())
 {
-    var registry = scope.ServiceProvider.GetRequiredService<AIProviderRegistry>();
-    var openaiLLM = scope.ServiceProvider.GetRequiredService<OpenAILLMProvider>();
-    var openaiImage = scope.ServiceProvider.GetRequiredService<OpenAIImageProvider>();
-    var swarmUI = scope.ServiceProvider.GetRequiredService<SwarmUIImageProvider>();
+    AIProviderRegistry registry = scope.ServiceProvider.GetRequiredService<AIProviderRegistry>();
+    OpenAILLMProvider openaiLLM = scope.ServiceProvider.GetRequiredService<OpenAILLMProvider>();
+    OpenAIImageProvider openaiImage = scope.ServiceProvider.GetRequiredService<OpenAIImageProvider>();
+    SwarmUIImageProvider swarmUI = scope.ServiceProvider.GetRequiredService<SwarmUIImageProvider>();
 
     // Register all providers
     registry.RegisterLLMProvider(openaiLLM);
     registry.RegisterImageProvider(openaiImage);
     registry.RegisterImageProvider(swarmUI);
 
-    app.Logger.LogInformation("AI Provider Registry initialized");
+    Logs.Init("AI Provider Registry initialized");
 
     // Initialize database
-    var dbService = scope.ServiceProvider.GetRequiredService<DatabaseService>();
+    DatabaseService dbService = scope.ServiceProvider.GetRequiredService<DatabaseService>();
     await dbService.InitializeDatabaseAsync();
 }
 
@@ -94,7 +94,7 @@ app.MapControllers();
 // Serve index.html as default document
 app.MapFallbackToFile("index.html");
 
-app.Logger.LogInformation("BuzzFreed Discord Activity starting...");
-app.Logger.LogInformation($"Environment: {app.Environment.EnvironmentName}");
+Logs.Init("BuzzFreed Discord Activity starting...");
+Logs.Info($"Environment: {app.Environment.EnvironmentName}");
 
 app.Run();
