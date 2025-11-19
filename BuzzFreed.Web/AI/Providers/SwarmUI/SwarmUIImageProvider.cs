@@ -1,5 +1,3 @@
-using System.Text;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using BuzzFreed.Web.AI.Abstractions;
 using BuzzFreed.Web.AI.Models;
@@ -40,12 +38,7 @@ public class SwarmUIImageProvider(AIProviderRegistry registry) : IImageProvider
     {
         AIProviderConfig config = registry.GetProviderConfig("swarmui") ?? new AIProviderConfig();
         string baseUrl = config.BaseUrl ?? "http://127.0.0.1:7801";
-        HttpClient client = new()
-        {
-            BaseAddress = new Uri(baseUrl),
-            Timeout = TimeSpan.FromSeconds(config.TimeoutSeconds)
-        };
-        return client;
+        return HttpClientHelper.CreateClientWithBaseUrl(baseUrl, null, config.TimeoutSeconds);
     }
 
     public async Task<bool> IsAvailableAsync()
@@ -54,7 +47,7 @@ public class SwarmUIImageProvider(AIProviderRegistry registry) : IImageProvider
         {
             // Try to get a session - if successful, SwarmUI is available
             await GetOrCreateSessionAsync();
-            return !string.IsNullOrEmpty(SessionId);
+            return !ValidationHelper.IsNullOrEmpty(SessionId);
         }
         catch
         {

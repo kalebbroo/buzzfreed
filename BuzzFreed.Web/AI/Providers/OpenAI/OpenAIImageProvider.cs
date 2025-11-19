@@ -1,5 +1,3 @@
-using System.Text;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using BuzzFreed.Web.AI.Abstractions;
 using BuzzFreed.Web.AI.Models;
@@ -13,7 +11,7 @@ namespace BuzzFreed.Web.AI.Providers.OpenAI;
 /// </summary>
 public class OpenAIImageProvider(AIProviderRegistry registry) : IImageProvider
 {
-    public readonly HttpClient HttpClient = new();
+    public readonly HttpClient HttpClient = HttpClientHelper.CreateClient();
     public readonly AIProviderConfig Config = registry.GetProviderConfig("openai-image") ?? registry.GetProviderConfig("openai") ?? new AIProviderConfig();
     public const string ApiEndpoint = "https://api.openai.com/v1/images/generations";
 
@@ -34,11 +32,11 @@ public class OpenAIImageProvider(AIProviderRegistry registry) : IImageProvider
 
     public Task<bool> IsAvailableAsync()
     {
-        bool isAvailable = !string.IsNullOrEmpty(Config.ApiKey) && Config.Enabled;
-        if (isAvailable && !HttpClient.DefaultRequestHeaders.Contains("Authorization"))
+        bool isAvailable = !ValidationHelper.IsNullOrEmpty(Config.ApiKey) && Config.Enabled;
+        if (isAvailable)
         {
-            HttpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {Config.ApiKey}");
-            HttpClient.Timeout = TimeSpan.FromSeconds(Config.TimeoutSeconds);
+            HttpClientHelper.AddAuthorizationHeader(HttpClient, Config.ApiKey!);
+            HttpClientHelper.SetTimeout(HttpClient, Config.TimeoutSeconds);
         }
         return Task.FromResult(isAvailable);
     }
@@ -87,32 +85,35 @@ public class OpenAIImageProvider(AIProviderRegistry registry) : IImageProvider
                 response_format = "url" // or "b64_json"
             };
 
-            string payloadString = JsonConvert.SerializeObject(payload, new JsonSerializerSettings
-            {
-                NullValueHandling = NullValueHandling.Ignore
-            });
-
-            StringContent httpContent = new(payloadString, Encoding.UTF8, "application/json");
-
             progressCallback?.Invoke(30, "Calling OpenAI DALL-E API...");
             Logs.Debug($"Calling OpenAI DALL-E with model: {model}");
 
-            HttpResponseMessage response = await HttpClient.PostAsync(ApiEndpoint, httpContent, cancellationToken);
-            string responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            HttpResult<string> result = await HttpHelper.PostJsonAsync(HttpClient, ApiEndpoint, payload, cancellationToken);
 
-            if (!response.IsSuccessStatusCode)
+            if (!result.IsSuccess)
             {
-                Logs.Error($"OpenAI DALL-E API error: {response.StatusCode} - {responseContent}");
+                Logs.Error($"OpenAI DALL-E API error: {result.Error}");
                 return new ImageResponse
                 {
-                    Error = $"OpenAI DALL-E API error: {response.StatusCode}",
+                    Error = $"OpenAI DALL-E API error: {result.Error}",
                     Provider = ProviderName
                 };
             }
 
             progressCallback?.Invoke(80, "Processing generated images...");
 
-            JObject responseObject = JObject.Parse(responseContent);
+            JObject? responseObject = JsonHelper.ParseObject(result.Data);
+
+            if (responseObject == null)
+            {
+                Logs.Error("Failed to parse OpenAI DALL-E API response");
+                return new ImageResponse
+                {
+                    Error = "Failed to parse API response",
+                    Provider = ProviderName
+                };
+            }
+
             JArray? dataArray = responseObject["data"] as JArray;
 
             List<GeneratedImage> images = new();

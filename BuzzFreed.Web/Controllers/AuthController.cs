@@ -1,23 +1,15 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Text;
+using BuzzFreed.Web.Utils;
 using Newtonsoft.Json;
 
 namespace BuzzFreed.Web.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    public class AuthController : ControllerBase
+    public class AuthController(IConfiguration configuration) : ControllerBase
     {
-        private readonly IConfiguration _configuration;
-        private readonly ILogger<AuthController> _logger;
-        private readonly HttpClient _httpClient;
-
-        public AuthController(IConfiguration configuration, ILogger<AuthController> logger)
-        {
-            _configuration = configuration;
-            _logger = logger;
-            _httpClient = new HttpClient();
-        }
+        public readonly IConfiguration Configuration = configuration;
+        public readonly HttpClient HttpClient = HttpClientHelper.CreateClient();
 
         /// <summary>
         /// Exchange Discord OAuth code for access token
@@ -29,49 +21,50 @@ namespace BuzzFreed.Web.Controllers
         {
             try
             {
-                var clientId = _configuration["Discord:ClientId"];
-                var clientSecret = _configuration["Discord:ClientSecret"];
+                string clientId = ConfigHelper.GetValue(Configuration, "Discord:ClientId");
+                string clientSecret = ConfigHelper.GetValue(Configuration, "Discord:ClientSecret");
 
-                if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
+                if (ValidationHelper.IsNullOrEmpty(clientId) || ValidationHelper.IsNullOrEmpty(clientSecret))
                 {
-                    _logger.LogError("Discord credentials not configured");
+                    Logs.Error("Discord credentials not configured");
                     return StatusCode(500, new { error = "Discord credentials not configured" });
                 }
 
                 // Exchange code for access token with Discord
-                var tokenUrl = "https://discord.com/api/oauth2/token";
-                var content = new FormUrlEncodedContent(new Dictionary<string, string>
+                string tokenUrl = "https://discord.com/api/oauth2/token";
+                Dictionary<string, string> formData = new Dictionary<string, string>
                 {
                     { "client_id", clientId },
                     { "client_secret", clientSecret },
                     { "grant_type", "authorization_code" },
                     { "code", request.Code }
-                });
+                };
 
-                var response = await _httpClient.PostAsync(tokenUrl, content);
-                var responseContent = await response.Content.ReadAsStringAsync();
+                HttpResult<DiscordTokenResponse> result = await HttpHelper.PostFormAsync<DiscordTokenResponse>(
+                    HttpClient,
+                    tokenUrl,
+                    formData
+                );
 
-                if (!response.IsSuccessStatusCode)
+                if (!result.IsSuccess)
                 {
-                    _logger.LogError($"Discord token exchange failed: {responseContent}");
-                    return StatusCode((int)response.StatusCode, new { error = "Token exchange failed" });
+                    Logs.Error($"Discord token exchange failed: {result.Error}");
+                    return StatusCode(result.StatusCode, new { error = "Token exchange failed" });
                 }
 
-                var tokenData = JsonConvert.DeserializeObject<DiscordTokenResponse>(responseContent);
-
-                if (tokenData == null || string.IsNullOrEmpty(tokenData.AccessToken))
+                if (result.Data == null || ValidationHelper.IsNullOrEmpty(result.Data.AccessToken))
                 {
                     return StatusCode(500, new { error = "Invalid token response" });
                 }
 
                 return Ok(new TokenResponse
                 {
-                    AccessToken = tokenData.AccessToken
+                    AccessToken = result.Data.AccessToken
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error exchanging token");
+                Logs.Error($"Error exchanging token: {ex.Message}");
                 return StatusCode(500, new { error = "Failed to exchange token" });
             }
         }

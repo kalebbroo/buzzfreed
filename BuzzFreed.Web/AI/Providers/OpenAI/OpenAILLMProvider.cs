@@ -1,5 +1,3 @@
-using System.Text;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using BuzzFreed.Web.AI.Abstractions;
 using BuzzFreed.Web.AI.Models;
@@ -13,7 +11,7 @@ namespace BuzzFreed.Web.AI.Providers.OpenAI;
 /// </summary>
 public class OpenAILLMProvider(AIProviderRegistry registry) : ILLMProvider
 {
-    public readonly HttpClient HttpClient = new();
+    public readonly HttpClient HttpClient = HttpClientHelper.CreateClient();
     public readonly AIProviderConfig Config = registry.GetProviderConfig("openai") ?? new AIProviderConfig();
     public const string ApiEndpoint = "https://api.openai.com/v1/chat/completions";
 
@@ -32,11 +30,11 @@ public class OpenAILLMProvider(AIProviderRegistry registry) : ILLMProvider
 
     public Task<bool> IsAvailableAsync()
     {
-        bool isAvailable = !string.IsNullOrEmpty(Config.ApiKey) && Config.Enabled;
-        if (isAvailable && !HttpClient.DefaultRequestHeaders.Contains("Authorization"))
+        bool isAvailable = !ValidationHelper.IsNullOrEmpty(Config.ApiKey) && Config.Enabled;
+        if (isAvailable)
         {
-            HttpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {Config.ApiKey}");
-            HttpClient.Timeout = TimeSpan.FromSeconds(Config.TimeoutSeconds);
+            HttpClientHelper.AddAuthorizationHeader(HttpClient, Config.ApiKey!);
+            HttpClientHelper.SetTimeout(HttpClient, Config.TimeoutSeconds);
         }
         return Task.FromResult(isAvailable);
     }
@@ -90,38 +88,41 @@ public class OpenAILLMProvider(AIProviderRegistry registry) : ILLMProvider
                 stop = request.StopSequences
             };
 
-            string payloadString = JsonConvert.SerializeObject(payload, new JsonSerializerSettings
-            {
-                NullValueHandling = NullValueHandling.Ignore
-            });
-
-            StringContent httpContent = new(payloadString, Encoding.UTF8, "application/json");
-
             Logs.Debug($"Calling OpenAI API with model: {model}");
-            HttpResponseMessage response = await HttpClient.PostAsync(ApiEndpoint, httpContent, cancellationToken);
-            string responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            HttpResult<string> result = await HttpHelper.PostJsonAsync(HttpClient, ApiEndpoint, payload, cancellationToken);
 
-            if (!response.IsSuccessStatusCode)
+            if (!result.IsSuccess)
             {
-                Logs.Error($"OpenAI API error: {response.StatusCode} - {responseContent}");
+                Logs.Error($"OpenAI API error: {result.Error}");
                 return new LLMResponse
                 {
-                    Error = $"OpenAI API error: {response.StatusCode}",
+                    Error = $"OpenAI API error: {result.Error}",
                     Provider = ProviderName
                 };
             }
 
-            JObject responseObject = JObject.Parse(responseContent);
-            string? messageContent = responseObject["choices"]?[0]?["message"]?["content"]?.ToString()?.Trim();
-            string? finishReason = responseObject["choices"]?[0]?["finish_reason"]?.ToString();
-            JToken? usage = responseObject["usage"];
+            JObject? responseObject = JsonHelper.ParseObject(result.Data);
+
+            if (responseObject == null)
+            {
+                Logs.Error("Failed to parse OpenAI API response");
+                return new LLMResponse
+                {
+                    Error = "Failed to parse API response",
+                    Provider = ProviderName
+                };
+            }
+
+            string messageContent = JsonHelper.GetString(responseObject, "choices[0].message.content");
+            string finishReason = JsonHelper.GetString(responseObject, "choices[0].finish_reason");
+            int tokensUsed = JsonHelper.GetInt(responseObject, "usage.total_tokens");
 
             return new LLMResponse
             {
-                Text = messageContent ?? string.Empty,
+                Text = messageContent.Trim(),
                 Model = model,
                 Provider = ProviderName,
-                TokensUsed = usage?["total_tokens"]?.Value<int>() ?? 0,
+                TokensUsed = tokensUsed,
                 FinishReason = finishReason,
                 IsFallback = false
             };

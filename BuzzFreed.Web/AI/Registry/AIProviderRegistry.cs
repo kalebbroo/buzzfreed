@@ -44,7 +44,7 @@ public class AIProviderRegistry(IConfiguration configuration)
     public async Task<ILLMProvider?> GetLLMProviderAsync(string? preferredProviderId = null)
     {
         // Try preferred provider first
-        if (!string.IsNullOrEmpty(preferredProviderId) && LLMProviders.ContainsKey(preferredProviderId))
+        if (!ValidationHelper.IsNullOrEmpty(preferredProviderId) && LLMProviders.ContainsKey(preferredProviderId))
         {
             ILLMProvider preferred = LLMProviders[preferredProviderId];
             if (await preferred.IsAvailableAsync())
@@ -90,7 +90,7 @@ public class AIProviderRegistry(IConfiguration configuration)
     public async Task<IImageProvider?> GetImageProviderAsync(string? preferredProviderId = null)
     {
         // Try preferred provider first
-        if (!string.IsNullOrEmpty(preferredProviderId) && ImageProviders.ContainsKey(preferredProviderId))
+        if (!ValidationHelper.IsNullOrEmpty(preferredProviderId) && ImageProviders.ContainsKey(preferredProviderId))
         {
             IImageProvider preferred = ImageProviders[preferredProviderId];
             if (await preferred.IsAvailableAsync())

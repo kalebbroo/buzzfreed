@@ -1,21 +1,15 @@
 using Microsoft.AspNetCore.Mvc;
 using BuzzFreed.Web.Models;
 using BuzzFreed.Web.Services;
+using BuzzFreed.Web.Utils;
 
 namespace BuzzFreed.Web.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    public class QuizController : ControllerBase
+    public class QuizController(QuizService quizService) : ControllerBase
     {
-        private readonly QuizService _quizService;
-        private readonly ILogger<QuizController> _logger;
-
-        public QuizController(QuizService quizService, ILogger<QuizController> logger)
-        {
-            _quizService = quizService;
-            _logger = logger;
-        }
+        public readonly QuizService QuizService = quizService;
 
         /// <summary>
         /// Generate a new quiz
@@ -26,9 +20,9 @@ namespace BuzzFreed.Web.Controllers
         {
             try
             {
-                _logger.LogInformation($"Generating quiz for user {request.UserId}");
+                Logs.Info($"Generating quiz for user {request.UserId}");
 
-                var session = await _quizService.GenerateQuizAsync(request.UserId, request.CustomTopic);
+                QuizSession session = await QuizService.GenerateQuizAsync(request.UserId, request.CustomTopic);
 
                 return Ok(new QuizGenerateResponse
                 {
@@ -45,7 +39,7 @@ namespace BuzzFreed.Web.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error generating quiz");
+                Logs.Error($"Error generating quiz: {ex.Message}");
                 return StatusCode(500, new { error = "Failed to generate quiz" });
             }
         }
@@ -59,7 +53,7 @@ namespace BuzzFreed.Web.Controllers
         {
             try
             {
-                var session = _quizService.SubmitAnswer(request.SessionId, request.Answer);
+                QuizSession? session = QuizService.SubmitAnswer(request.SessionId, request.Answer);
 
                 if (session == null)
                 {
@@ -78,7 +72,7 @@ namespace BuzzFreed.Web.Controllers
                 }
 
                 // Return next question
-                var nextQuestion = session.Quiz.Questions[session.CurrentQuestionIndex];
+                Question nextQuestion = session.Quiz.Questions[session.CurrentQuestionIndex];
                 return Ok(new AnswerResponse
                 {
                     IsCompleted = false,
@@ -94,7 +88,7 @@ namespace BuzzFreed.Web.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error submitting answer");
+                Logs.Error($"Error submitting answer: {ex.Message}");
                 return StatusCode(500, new { error = "Failed to submit answer" });
             }
         }
@@ -108,7 +102,7 @@ namespace BuzzFreed.Web.Controllers
         {
             try
             {
-                var result = await _quizService.CalculateResultAsync(
+                QuizResult result = await QuizService.CalculateResultAsync(
                     request.SessionId,
                     request.UserId,
                     request.GuildId
@@ -122,7 +116,7 @@ namespace BuzzFreed.Web.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error calculating result");
+                Logs.Error($"Error calculating result: {ex.Message}");
                 return StatusCode(500, new { error = "Failed to calculate result" });
             }
         }
@@ -136,12 +130,12 @@ namespace BuzzFreed.Web.Controllers
         {
             try
             {
-                var history = await _quizService.GetUserHistoryAsync(userId, guildId);
+                List<QuizResult> history = await QuizService.GetUserHistoryAsync(userId, guildId);
                 return Ok(history);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error retrieving quiz history");
+                Logs.Error($"Error retrieving quiz history: {ex.Message}");
                 return StatusCode(500, new { error = "Failed to retrieve quiz history" });
             }
         }
@@ -153,7 +147,7 @@ namespace BuzzFreed.Web.Controllers
         [HttpGet("session/{sessionId}")]
         public ActionResult<QuizSessionResponse> GetSession(string sessionId)
         {
-            var session = _quizService.GetSession(sessionId);
+            QuizSession? session = QuizService.GetSession(sessionId);
 
             if (session == null)
             {
