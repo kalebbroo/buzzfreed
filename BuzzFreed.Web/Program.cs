@@ -1,4 +1,7 @@
 using BuzzFreed.Web.Services;
+using BuzzFreed.Web.AI.Registry;
+using BuzzFreed.Web.AI.Providers.OpenAI;
+using BuzzFreed.Web.AI.Providers.SwarmUI;
 using DotNetEnv;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -13,9 +16,17 @@ builder.Configuration.AddEnvironmentVariables();
 builder.Services.AddControllers()
     .AddNewtonsoftJson(); // Use Newtonsoft.Json for better compatibility
 
+// Register AI Provider Registry (singleton)
+builder.Services.AddSingleton<AIProviderRegistry>();
+
+// Register AI Providers
+builder.Services.AddSingleton<OpenAILLMProvider>();
+builder.Services.AddSingleton<OpenAIImageProvider>();
+builder.Services.AddSingleton<SwarmUIImageProvider>();
+
 // Register custom services
 builder.Services.AddSingleton<DatabaseService>();
-builder.Services.AddSingleton<OpenAIService>();
+builder.Services.AddSingleton<OpenAIService>(); // Kept for backward compatibility
 builder.Services.AddSingleton<QuizService>();
 
 // Add CORS for Discord iframe
@@ -37,9 +48,22 @@ builder.Logging.AddDebug();
 
 var app = builder.Build();
 
-// Initialize database on startup
+// Initialize AI Provider Registry and register providers
 using (var scope = app.Services.CreateScope())
 {
+    var registry = scope.ServiceProvider.GetRequiredService<AIProviderRegistry>();
+    var openaiLLM = scope.ServiceProvider.GetRequiredService<OpenAILLMProvider>();
+    var openaiImage = scope.ServiceProvider.GetRequiredService<OpenAIImageProvider>();
+    var swarmUI = scope.ServiceProvider.GetRequiredService<SwarmUIImageProvider>();
+
+    // Register all providers
+    registry.RegisterLLMProvider(openaiLLM);
+    registry.RegisterImageProvider(openaiImage);
+    registry.RegisterImageProvider(swarmUI);
+
+    app.Logger.LogInformation("AI Provider Registry initialized");
+
+    // Initialize database
     var dbService = scope.ServiceProvider.GetRequiredService<DatabaseService>();
     await dbService.InitializeDatabaseAsync();
 }
