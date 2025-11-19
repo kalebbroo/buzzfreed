@@ -1,3 +1,5 @@
+using BuzzFreed.Web.AI.Models;
+
 namespace BuzzFreed.Web.AI.Abstractions
 {
     /// <summary>
@@ -29,6 +31,11 @@ namespace BuzzFreed.Web.AI.Abstractions
         /// Get provider capabilities
         /// </summary>
         ProviderCapabilities GetCapabilities();
+
+        /// <summary>
+        /// Get all available models from this provider
+        /// </summary>
+        List<AIModel> GetAvailableModels();
     }
 
     public enum ProviderType

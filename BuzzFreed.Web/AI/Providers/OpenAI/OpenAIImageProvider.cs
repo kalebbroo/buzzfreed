@@ -57,6 +57,49 @@ public class OpenAIImageProvider(AIProviderRegistry registry) : IImageProvider
         };
     }
 
+    public List<AIModel> GetAvailableModels()
+    {
+        List<AIModel> models = new List<AIModel>();
+        bool isAvailable = Config.Enabled && !ValidationHelper.IsNullOrEmpty(Config.ApiKey);
+        int basePriority = Config.Priority;
+
+        models.Add(new AIModel
+        {
+            ModelId = "dall-e-3",
+            DisplayName = "DALL-E 3",
+            ProviderId = ProviderId,
+            ProviderName = ProviderName,
+            Type = ModelType.Image,
+            IsAvailable = isAvailable,
+            Priority = basePriority + 100,
+            Capabilities = new ModelCapabilities
+            {
+                MaxImageSize = 1792,
+                SupportedFormats = new List<string> { "png", "url" }
+            },
+            Pricing = new ModelPricing { ImageCostPerGeneration = 0.04m }
+        });
+
+        models.Add(new AIModel
+        {
+            ModelId = "dall-e-2",
+            DisplayName = "DALL-E 2",
+            ProviderId = ProviderId,
+            ProviderName = ProviderName,
+            Type = ModelType.Image,
+            IsAvailable = isAvailable,
+            Priority = basePriority + 80,
+            Capabilities = new ModelCapabilities
+            {
+                MaxImageSize = 1024,
+                SupportedFormats = new List<string> { "png", "url" }
+            },
+            Pricing = new ModelPricing { ImageCostPerGeneration = 0.02m }
+        });
+
+        return models;
+    }
+
     public async Task<ImageResponse> GenerateImageAsync(ImageRequest request, CancellationToken cancellationToken = default)
     {
         return await GenerateImageWithProgressAsync(request, null, cancellationToken);

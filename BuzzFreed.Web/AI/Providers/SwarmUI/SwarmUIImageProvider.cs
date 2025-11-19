@@ -73,6 +73,40 @@ public class SwarmUIImageProvider(AIProviderRegistry registry) : IImageProvider
         };
     }
 
+    public List<AIModel> GetAvailableModels()
+    {
+        List<AIModel> models = new List<AIModel>();
+        bool isAvailable = Config.Enabled && !ValidationHelper.IsNullOrEmpty(Config.BaseUrl);
+        int basePriority = Config.Priority;
+
+        // SwarmUI can host multiple Stable Diffusion models
+        // This is a basic model entry - in practice, you'd query SwarmUI API for available models
+        models.Add(new AIModel
+        {
+            ModelId = "stable-diffusion",
+            DisplayName = "Stable Diffusion (SwarmUI)",
+            ProviderId = ProviderId,
+            ProviderName = ProviderName,
+            Type = ModelType.Image,
+            IsAvailable = isAvailable,
+            Priority = basePriority + 90,
+            Capabilities = new ModelCapabilities
+            {
+                MaxImageSize = 2048,
+                SupportedFormats = new List<string> { "png", "jpg", "webp" },
+                CustomCapabilities = new Dictionary<string, object>
+                {
+                    { "supports_negative_prompt", true },
+                    { "supports_cfg_scale", true },
+                    { "supports_steps", true }
+                }
+            },
+            Pricing = new ModelPricing { ImageCostPerGeneration = 0.00m } // Self-hosted, no cost
+        });
+
+        return models;
+    }
+
     public async Task<ImageResponse> GenerateImageAsync(ImageRequest request, CancellationToken cancellationToken = default)
     {
         return await GenerateImageWithProgressAsync(request, null, cancellationToken);
