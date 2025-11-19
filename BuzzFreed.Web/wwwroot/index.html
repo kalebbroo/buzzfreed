@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BuzzFreed - AI Quiz</title>
+    <link rel="stylesheet" href="/css/quiz-styles.css">
+</head>
+<body>
+    <div id="app" class="container">
+        <!-- Loading Screen -->
+        <div id="loading-screen" class="screen active">
+            <div class="loading-spinner"></div>
+            <p>Connecting to Discord...</p>
+        </div>
+
+        <!-- Start Screen -->
+        <div id="start-screen" class="screen">
+            <div class="quiz-header">
+                <h1>🎯 BuzzFreed Quiz</h1>
+                <p class="subtitle">AI-Powered Personality Quizzes</p>
+            </div>
+            <div class="quiz-content">
+                <div id="topic-display" class="topic-box">
+                    <p class="generating">✨ Generating your quiz...</p>
+                </div>
+                <button id="start-btn" class="btn btn-primary" disabled>
+                    Start Quiz
+                </button>
+            </div>
+        </div>
+
+        <!-- Question Screen -->
+        <div id="question-screen" class="screen">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <div class="question-counter">
+                Question <span id="current-q">1</span> of <span id="total-q">6</span>
+            </div>
+            <div class="quiz-content">
+                <h2 id="question-text" class="question-text"></h2>
+                <div id="answer-options" class="answer-options">
+                    <!-- Answer buttons will be inserted here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Result Screen -->
+        <div id="result-screen" class="screen">
+            <div class="quiz-header">
+                <h1>Your Result:</h1>
+            </div>
+            <div class="quiz-content">
+                <div class="result-card">
+                    <div class="result-emoji">🎉</div>
+                    <h2 id="result-personality" class="result-personality"></h2>
+                    <p id="result-description" class="result-description"></p>
+                </div>
+                <div class="result-actions">
+                    <button id="retake-btn" class="btn btn-primary">
+                        Take Another Quiz
+                    </button>
+                    <button id="history-btn" class="btn btn-secondary">
+                        View History
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Screen -->
+        <div id="history-screen" class="screen">
+            <div class="quiz-header">
+                <h1>Your Quiz History</h1>
+                <button id="back-btn" class="btn btn-text">← Back</button>
+            </div>
+            <div class="quiz-content">
+                <div id="history-list" class="history-list">
+                    <!-- History items will be inserted here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Discord Embedded App SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@discord/embedded-app-sdk@latest/dist/discord.js"></script>
+
+    <!-- App JavaScript -->
+    <script src="/js/app.js"></script>
+    <script src="/js/quiz-app.js"></script>
+</body>
+</html>

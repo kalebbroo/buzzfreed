@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net7.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Database -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="7.0.0" />
+
+    <!-- HTTP Client for OpenAI -->
+    <PackageReference Include="System.Net.Http.Json" Version="7.0.0" />
+
+    <!-- JSON -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+
+    <!-- Environment variables -->
+    <PackageReference Include="DotNetEnv" Version="3.0.0" />
+  </ItemGroup>
+
+</Project>
