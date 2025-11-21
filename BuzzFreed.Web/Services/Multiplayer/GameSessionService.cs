@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using BuzzFreed.Web.AI.Abstractions;
+using BuzzFreed.Web.AI.Models;
 using BuzzFreed.Web.AI.Registry;
 using BuzzFreed.Web.Models;
 using BuzzFreed.Web.Models.Multiplayer;
@@ -121,36 +123,62 @@ public class GameSessionService(
             if (provider == null)
             {
                 Logs.Error("No AI provider available for quiz generation");
-                // TODO: Handle fallback (use pre-made quiz, error state, etc.)
+                Logs.Warning("Falling back to placeholder quiz");
+                session.CurrentQuiz = CreatePlaceholderQuiz(session.Settings);
+                session.State = SessionState.Active;
+                session.StartedAt = DateTime.UtcNow;
                 return;
             }
 
             // Build prompt from settings
             string prompt = BuildQuizPrompt(session.Settings);
 
-            // TODO: Call AI provider to generate quiz
-            // LLMResponse response = await provider.GenerateCompletionAsync(new LLMRequest
-            // {
-            //     Prompt = prompt,
-            //     SystemMessage = "You are a creative quiz generator...",
-            //     MaxTokens = 2000,
-            //     Temperature = 0.8
-            // });
+            Logs.Debug($"Calling AI provider to generate quiz with prompt: {prompt.Substring(0, Math.Min(100, prompt.Length))}...");
 
-            // TODO: Parse response into Quiz object
-            // session.CurrentQuiz = ParseQuizResponse(response.Text);
+            // Call AI provider to generate quiz
+            LLMResponse response = await provider.GenerateCompletionAsync(new LLMRequest
+            {
+                Prompt = prompt,
+                SystemMessage = @"You are a creative quiz generator for a multiplayer trivia game.
+Generate engaging, fun, and challenging questions that players will enjoy.
+Always respond with valid JSON only - no markdown formatting, no code blocks, no additional text.
+Make questions entertaining and social - perfect for friends playing together.",
+                MaxTokens = 3000,
+                Temperature = 0.8,
+                Model = null // Use default model
+            });
 
-            // TEMPORARY: Create placeholder quiz
-            session.CurrentQuiz = CreatePlaceholderQuiz(session.Settings);
+            if (!response.IsSuccess || string.IsNullOrEmpty(response.Text))
+            {
+                Logs.Error($"AI generation failed: {response.Error ?? "Empty response"}");
+                Logs.Warning("Falling back to placeholder quiz");
+                session.CurrentQuiz = CreatePlaceholderQuiz(session.Settings);
+            }
+            else
+            {
+                // Parse response into Quiz object
+                try
+                {
+                    session.CurrentQuiz = ParseQuizResponse(response.Text, session.Settings);
+                    Logs.Info($"Quiz generated successfully by {response.Provider}/{response.Model}");
+                }
+                catch (Exception parseEx)
+                {
+                    Logs.Error($"Failed to parse AI response: {parseEx.Message}");
+                    Logs.Warning("Falling back to placeholder quiz");
+                    session.CurrentQuiz = CreatePlaceholderQuiz(session.Settings);
+                }
+            }
 
             session.State = SessionState.Active;
             session.StartedAt = DateTime.UtcNow;
 
-            Logs.Info($"Quiz generated: {session.CurrentQuiz.Questions.Count} questions");
+            Logs.Info($"Quiz ready: {session.CurrentQuiz.Questions.Count} questions, Title: {session.CurrentQuiz.Title}");
         }
         catch (Exception ex)
         {
             Logs.Error($"Error generating quiz: {ex.Message}");
+            Logs.Error($"Stack trace: {ex.StackTrace}");
             session.State = SessionState.Aborted;
             // TODO: Broadcast error to players
         }
@@ -386,31 +414,202 @@ public class GameSessionService(
     /// </summary>
     private string BuildQuizPrompt(QuizCustomization settings)
     {
-        // TODO: Implement comprehensive prompt building
-        // Should include: topic, style, difficulty, question count, etc.
+        // Build comprehensive prompt based on all settings
+        var promptParts = new List<string>();
 
-        return $"Generate a BuzzFeed-style quiz about {settings.Topic ?? "general knowledge"} with {settings.QuestionCount} questions.";
+        // Base instruction
+        promptParts.Add("Generate a multiplayer trivia quiz in JSON format.");
+
+        // Topic and category
+        if (!string.IsNullOrEmpty(settings.CustomPrompt))
+        {
+            promptParts.Add($"Theme: {settings.CustomPrompt}");
+        }
+        else if (!string.IsNullOrEmpty(settings.Topic))
+        {
+            promptParts.Add($"Topic: {settings.Topic}");
+        }
+        else if (!string.IsNullOrEmpty(settings.Category))
+        {
+            promptParts.Add($"Category: {settings.Category}");
+        }
+        else
+        {
+            promptParts.Add("Topic: General knowledge with a fun, engaging mix of pop culture and trivia");
+        }
+
+        // Style
+        string styleDescription = settings.Style switch
+        {
+            QuestionStyle.Deep => "Ask thought-provoking, philosophical questions that make players think deeply.",
+            QuestionStyle.Chaotic => "Create wild, unpredictable, absurd questions that surprise players.",
+            QuestionStyle.Rapid => "Generate quick-fire, straightforward questions for fast gameplay.",
+            QuestionStyle.Story => "Craft narrative-driven questions that build on each other with storylines.",
+            _ => "Create classic trivia questions in the style of BuzzFeed quizzes - fun, engaging, and social."
+        };
+        promptParts.Add(styleDescription);
+
+        // Difficulty
+        string difficultyDescription = settings.Difficulty switch
+        {
+            Difficulty.Challenging => "Make questions challenging that require real knowledge. Mix well-known facts with deeper cuts.",
+            Difficulty.Absurd => "Make questions extremely difficult, niche, or absurdly specific. Only experts should know these!",
+            _ => "Keep questions accessible and fun. Players should feel smart, not frustrated."
+        };
+        promptParts.Add(difficultyDescription);
+
+        // Question count
+        promptParts.Add($"Generate exactly {settings.QuestionCount} questions.");
+
+        // Answer options
+        promptParts.Add($"Each question must have exactly {settings.AnswerCount} answer options.");
+
+        // Explanations
+        if (settings.IncludeExplanations)
+        {
+            promptParts.Add("Include a brief, interesting explanation for each correct answer.");
+        }
+
+        // Format requirements
+        promptParts.Add("\nIMPORTANT - Response Format:");
+        promptParts.Add("Return ONLY valid JSON in this exact structure (no markdown, no code blocks, no additional text):");
+        promptParts.Add(@"{
+  ""title"": ""Quiz Title"",
+  ""description"": ""Brief quiz description"",
+  ""questions"": [
+    {
+      ""text"": ""Question text here?"",
+      ""answers"": [""Option A"", ""Option B"", ""Option C"", ""Option D""],
+      ""correctIndex"": 0,
+      ""explanation"": ""Why this is the correct answer"",
+      ""category"": ""Category tag""
+    }
+  ]
+}");
+
+        return string.Join(" ", promptParts);
     }
 
     /// <summary>
     /// Parse AI response into Quiz object
     /// </summary>
-    private Quiz ParseQuizResponse(string responseText)
+    private Quiz ParseQuizResponse(string responseText, QuizCustomization settings)
     {
-        // TODO: Implement JSON parsing
-        // Expected format:
-        // {
-        //   "title": "Quiz Title",
-        //   "questions": [
-        //     {
-        //       "text": "Question text",
-        //       "answers": ["A", "B", "C", "D"],
-        //       "correctIndex": 2
-        //     }
-        //   ]
-        // }
+        try
+        {
+            // Clean the response (remove markdown code blocks if present)
+            string cleanedJson = CleanJsonResponse(responseText);
 
-        return new Quiz();
+            // Parse JSON with options for case-insensitive property names
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                AllowTrailingCommas = true
+            };
+
+            var quizData = JsonSerializer.Deserialize<QuizJsonResponse>(cleanedJson, options);
+
+            if (quizData == null || quizData.Questions == null || quizData.Questions.Count == 0)
+            {
+                Logs.Error("Failed to parse quiz JSON - null or empty questions");
+                throw new Exception("Invalid quiz data received from AI");
+            }
+
+            // Convert to Quiz model
+            Quiz quiz = new Quiz
+            {
+                QuizId = Guid.NewGuid().ToString(),
+                Title = quizData.Title ?? $"Quiz: {settings.Topic ?? "General"}",
+                Topic = settings.Topic ?? settings.Category ?? "General",
+                Description = quizData.Description,
+                CreatedBy = "AI",
+                CreatedAt = DateTime.UtcNow,
+                Questions = new List<Question>()
+            };
+
+            // Convert questions
+            foreach (var q in quizData.Questions)
+            {
+                if (string.IsNullOrEmpty(q.Text) || q.Answers == null || q.Answers.Count == 0)
+                {
+                    Logs.Warning("Skipping invalid question in AI response");
+                    continue;
+                }
+
+                quiz.Questions.Add(new Question
+                {
+                    QuestionId = Guid.NewGuid().ToString(),
+                    Text = q.Text,
+                    Answers = q.Answers,
+                    CorrectAnswerIndex = q.CorrectIndex,
+                    Explanation = q.Explanation,
+                    Category = q.Category,
+                    ImageUrl = q.ImageUrl,
+                    Difficulty = settings.Difficulty.ToString()
+                });
+            }
+
+            Logs.Info($"Successfully parsed {quiz.Questions.Count} questions from AI response");
+            return quiz;
+        }
+        catch (JsonException ex)
+        {
+            Logs.Error($"JSON parsing error: {ex.Message}");
+            Logs.Debug($"Response text: {responseText}");
+            throw new Exception($"Failed to parse quiz JSON: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Clean JSON response by removing markdown code blocks and extra whitespace
+    /// </summary>
+    private string CleanJsonResponse(string response)
+    {
+        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
+        response = response.Trim();
+
+        if (response.StartsWith("```"))
+        {
+            // Find first newline after ```
+            int start = response.IndexOf('\n');
+            if (start >= 0)
+            {
+                response = response.Substring(start + 1);
+            }
+
+            // Remove closing ```
+            int end = response.LastIndexOf("```");
+            if (end >= 0)
+            {
+                response = response.Substring(0, end);
+            }
+        }
+
+        return response.Trim();
+    }
+
+    /// <summary>
+    /// DTO for parsing quiz JSON from AI
+    /// </summary>
+    private class QuizJsonResponse
+    {
+        public string? Title { get; set; }
+        public string? Description { get; set; }
+        public List<QuestionJsonResponse> Questions { get; set; } = new();
+    }
+
+    /// <summary>
+    /// DTO for parsing question JSON from AI
+    /// </summary>
+    private class QuestionJsonResponse
+    {
+        public string Text { get; set; } = string.Empty;
+        public List<string> Answers { get; set; } = new();
+        public int CorrectIndex { get; set; }
+        public string? Explanation { get; set; }
+        public string? Category { get; set; }
+        public string? ImageUrl { get; set; }
     }
 
     /// <summary>
