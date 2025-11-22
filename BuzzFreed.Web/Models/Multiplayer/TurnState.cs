@@ -107,6 +107,12 @@ public class TurnState
     /// </summary>
     public ScoreBreakdown TurnScoreBreakdown { get; set; } = new();
 
+    /// <summary>
+    /// Whether this turn was explicitly marked as timed out
+    /// Set by the timer service when time expires
+    /// </summary>
+    public bool TimedOut { get; set; } = false;
+
     // Helper properties
 
     /// <summary>
@@ -118,10 +124,10 @@ public class TurnState
             : DateTime.UtcNow - StartTime;
 
     /// <summary>
-    /// Is turn timed out?
+    /// Is turn timed out? (computed or explicit)
     /// </summary>
     public bool IsTimedOut =>
-        DateTime.UtcNow - StartTime > TimeSpan.FromSeconds(TimeLimit);
+        TimedOut || DateTime.UtcNow - StartTime > TimeSpan.FromSeconds(TimeLimit);
 
     /// <summary>
     /// Has active player answered?

@@ -49,11 +49,13 @@ namespace BuzzFreed.Web.Services.Multiplayer;
 public class GameSessionService(
     GameModeRegistry gameModeRegistry,
     AIProviderRegistry aiProviderRegistry,
-    BroadcastService broadcastService)
+    BroadcastService broadcastService,
+    TimerService timerService)
 {
     public readonly GameModeRegistry GameModeRegistry = gameModeRegistry;
     public readonly AIProviderRegistry AIProviderRegistry = aiProviderRegistry;
     public readonly BroadcastService BroadcastService = broadcastService;
+    public readonly TimerService TimerService = timerService;
     public readonly ConcurrentDictionary<string, GameSession> ActiveSessions = new();
 
     /// <summary>
@@ -262,9 +264,52 @@ Make questions entertaining and social - perfect for friends playing together.",
                 session,
                 currentQuestion,
                 session.CurrentTurn.ActivePlayerId);
+
+            // Start turn timer
+            int timeLimit = session.CurrentTurn.TimeLimit;
+            TimerService.StartTurnTimer(
+                sessionId,
+                timeLimit,
+                onTimeout: (sid) => HandleTurnTimeout(sid),
+                onWarning: (sid, remaining) => _ = BroadcastService.BroadcastTimerWarningAsync(sid, remaining)
+            );
+
+            Logs.Debug($"Turn timer started: {timeLimit}s for session {sessionId}");
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Handle turn timeout (player didn't answer in time)
+    /// </summary>
+    private void HandleTurnTimeout(string sessionId)
+    {
+        if (!ActiveSessions.TryGetValue(sessionId, out GameSession? session))
+        {
+            return;
+        }
+
+        if (session.CurrentTurn == null)
+        {
+            return;
+        }
+
+        Logs.Warning($"Turn timeout in session {sessionId} - player {session.CurrentTurn.ActivePlayerId} didn't answer");
+
+        // Mark turn as timed out
+        session.CurrentTurn.TimedOut = true;
+
+        // Log the timeout event
+        session.LogEvent(new GameEvent
+        {
+            Type = GameEventType.TurnEnded,
+            PlayerId = session.CurrentTurn.ActivePlayerId,
+            Data = "Timed out - no answer submitted"
+        });
+
+        // End the turn with no answer (0 points)
+        EndCurrentTurn(sessionId);
     }
 
     /// <summary>
@@ -293,6 +338,10 @@ Make questions entertaining and social - perfect for friends playing together.",
             return false;
         }
 
+        // Cancel turn timer since player answered
+        TimerService.CancelTimer(TimerService.GetTurnTimerId(sessionId));
+        Logs.Debug($"Turn timer cancelled - player {playerId} answered");
+
         // Let mode process answer
         mode.OnAnswerSubmit(session, playerId, answerIndex);
 
@@ -303,9 +352,6 @@ Make questions entertaining and social - perfect for friends playing together.",
         // For team modes, wait for all votes
         if (session.CurrentTurn != null)
         {
-            bool shouldEndTurn = mode.Config.CustomSettings.TryGetValue("autoEndTurn", out var autoEnd)
-                && autoEnd is bool b && b;
-
             // In HotSeat, one answer ends the turn
             if (session.GameMode == GameModeType.HotSeat)
             {
@@ -367,13 +413,14 @@ Make questions entertaining and social - perfect for friends playing together.",
         // Broadcast updated scores
         _ = BroadcastService.BroadcastScoreUpdateAsync(sessionId, session.Scores);
 
-        // Schedule next turn start (after showing results for a few seconds)
-        // In production, this would use a timer service
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(5000); // 5 second results display
-            StartNextTurn(sessionId);
-        });
+        // Schedule next turn start (after showing results for 5 seconds)
+        TimerService.StartResultsTimer(
+            sessionId,
+            durationSeconds: 5,
+            onComplete: (sid) => StartNextTurn(sid)
+        );
+
+        Logs.Debug($"Results timer started: 5s before next turn in session {sessionId}");
 
         return true;
     }
@@ -468,11 +515,16 @@ Make questions entertaining and social - perfect for friends playing together.",
             Data = $"Aborted: {reason}"
         });
 
+        // Cancel all timers for this session
+        TimerService.CancelSessionTimers(sessionId);
+
         // Broadcast abort event to players
         _ = BroadcastService.BroadcastGameAbortedAsync(sessionId, reason);
 
         // Clean up session
         ActiveSessions.TryRemove(sessionId, out _);
+
+        Logs.Info($"Session {sessionId} aborted and cleaned up");
 
         return true;
     }

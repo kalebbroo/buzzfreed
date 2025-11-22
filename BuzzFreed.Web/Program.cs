@@ -48,10 +48,11 @@ builder.Services.AddSingleton<QuizService>();
 
 // Register Multiplayer services
 builder.Services.AddSingleton<GameModeRegistry>();
+builder.Services.AddSingleton<TimerService>();
+builder.Services.AddSingleton<BroadcastService>();
 builder.Services.AddSingleton<GameSessionService>();
 builder.Services.AddSingleton<RoomService>();
 builder.Services.AddSingleton<InteractionService>();
-builder.Services.AddSingleton<BroadcastService>();
 
 // Add CORS for Discord iframe (with SignalR support)
 builder.Services.AddCors(options =>
