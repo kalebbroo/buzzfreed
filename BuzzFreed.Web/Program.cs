@@ -1,7 +1,10 @@
 using BuzzFreed.Web.Services;
+using BuzzFreed.Web.Services.Multiplayer;
 using BuzzFreed.Web.AI.Registry;
 using BuzzFreed.Web.AI.Providers.OpenAI;
 using BuzzFreed.Web.AI.Providers.SwarmUI;
+using BuzzFreed.Web.Hubs;
+using BuzzFreed.Web.Models.Multiplayer.GameModes;
 using BuzzFreed.Web.Utils;
 using DotNetEnv;
 
@@ -21,6 +24,15 @@ builder.Configuration.AddEnvironmentVariables();
 builder.Services.AddControllers()
     .AddNewtonsoftJson(); // Use Newtonsoft.Json for better compatibility
 
+// Add SignalR for real-time multiplayer communication
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+    options.MaximumReceiveMessageSize = 64 * 1024; // 64KB max message size
+});
+
 // Register AI Provider Registry (singleton)
 builder.Services.AddSingleton<AIProviderRegistry>();
 
@@ -34,15 +46,27 @@ builder.Services.AddSingleton<DatabaseService>();
 builder.Services.AddSingleton<OpenAIService>(); // Kept for backward compatibility
 builder.Services.AddSingleton<QuizService>();
 
-// Add CORS for Discord iframe
+// Register Multiplayer services
+builder.Services.AddSingleton<GameModeRegistry>();
+builder.Services.AddSingleton<GameSessionService>();
+builder.Services.AddSingleton<RoomService>();
+builder.Services.AddSingleton<InteractionService>();
+builder.Services.AddSingleton<BroadcastService>();
+
+// Add CORS for Discord iframe (with SignalR support)
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("DiscordEmbedded", policy =>
     {
-        policy.WithOrigins("https://discord.com", "https://discordapp.com")
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials();
+        policy.WithOrigins(
+                "https://discord.com",
+                "https://discordapp.com",
+                "https://ptb.discord.com",
+                "https://canary.discord.com"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials(); // Required for SignalR
     });
 });
 
@@ -91,10 +115,23 @@ app.UseStaticFiles();
 // Map API controllers
 app.MapControllers();
 
+// Map SignalR hub for real-time game communication
+app.MapHub<GameHub>("/hubs/game");
+
+// Initialize Game Mode Registry
+using (IServiceScope scope = app.Services.CreateScope())
+{
+    GameModeRegistry gameModeRegistry = scope.ServiceProvider.GetRequiredService<GameModeRegistry>();
+    gameModeRegistry.RegisterMode(new HotSeatMode());
+    gameModeRegistry.RegisterMode(new TeamChallengeMode());
+    Logs.Init("Game Mode Registry initialized");
+}
+
 // Serve index.html as default document
 app.MapFallbackToFile("index.html");
 
 Logs.Init("BuzzFreed Discord Activity starting...");
 Logs.Info($"Environment: {app.Environment.EnvironmentName}");
+Logs.Info("SignalR hub available at /hubs/game");
 
 app.Run();

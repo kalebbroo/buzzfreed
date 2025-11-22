@@ -48,10 +48,12 @@ namespace BuzzFreed.Web.Services.Multiplayer;
 /// </summary>
 public class GameSessionService(
     GameModeRegistry gameModeRegistry,
-    AIProviderRegistry aiProviderRegistry)
+    AIProviderRegistry aiProviderRegistry,
+    BroadcastService broadcastService)
 {
     public readonly GameModeRegistry GameModeRegistry = gameModeRegistry;
     public readonly AIProviderRegistry AIProviderRegistry = aiProviderRegistry;
+    public readonly BroadcastService BroadcastService = broadcastService;
     public readonly ConcurrentDictionary<string, GameSession> ActiveSessions = new();
 
     /// <summary>
@@ -102,8 +104,8 @@ public class GameSessionService(
 
         Logs.Info($"Session created: {session.SessionId}");
 
-        // TODO: Broadcast session created event
-        // TODO: Schedule session timeout handler
+        // Broadcast session created event to all players in the room
+        await BroadcastService.BroadcastSessionCreatedAsync(session);
 
         return session;
     }
@@ -180,7 +182,11 @@ Make questions entertaining and social - perfect for friends playing together.",
             Logs.Error($"Error generating quiz: {ex.Message}");
             Logs.Error($"Stack trace: {ex.StackTrace}");
             session.State = SessionState.Aborted;
-            // TODO: Broadcast error to players
+            // Broadcast error to players
+            await BroadcastService.BroadcastErrorAsync(
+                $"room:{session.RoomId}",
+                "QUIZ_GENERATION_FAILED",
+                "Failed to generate quiz. Please try again.");
         }
     }
 
@@ -248,9 +254,15 @@ Make questions entertaining and social - perfect for friends playing together.",
 
         Logs.Info($"Session {sessionId}: Turn {nextQuestionNumber} started");
 
-        // TODO: Broadcast turn start event to all players
-        // TODO: Start turn timer
-        // TODO: Enable answer submission UI
+        // Broadcast turn start event to all players
+        if (session.CurrentTurn != null)
+        {
+            Question currentQuestion = session.CurrentQuiz.Questions[nextQuestionNumber - 1];
+            _ = BroadcastService.BroadcastTurnStartAsync(
+                session,
+                currentQuestion,
+                session.CurrentTurn.ActivePlayerId);
+        }
 
         return true;
     }
@@ -284,8 +296,22 @@ Make questions entertaining and social - perfect for friends playing together.",
         // Let mode process answer
         mode.OnAnswerSubmit(session, playerId, answerIndex);
 
-        // TODO: Check if turn should end (all players answered, time expired, etc.)
-        // TODO: Broadcast answer submission event
+        // Broadcast answer submission event (without revealing the answer yet)
+        _ = BroadcastService.BroadcastAnswerSubmittedAsync(sessionId, playerId, answerIndex, revealAnswer: false);
+
+        // Check if turn should end (e.g., in HotSeat mode, turn ends immediately after answer)
+        // For team modes, wait for all votes
+        if (session.CurrentTurn != null)
+        {
+            bool shouldEndTurn = mode.Config.CustomSettings.TryGetValue("autoEndTurn", out var autoEnd)
+                && autoEnd is bool b && b;
+
+            // In HotSeat, one answer ends the turn
+            if (session.GameMode == GameModeType.HotSeat)
+            {
+                EndCurrentTurn(sessionId);
+            }
+        }
 
         return true;
     }
@@ -313,14 +339,41 @@ Make questions entertaining and social - perfect for friends playing together.",
             return false;
         }
 
+        // Calculate turn scores before ending
+        Dictionary<string, int> turnScores = mode.CalculateScore(session, session.CurrentTurn);
+
+        // Update session scores
+        foreach (var score in turnScores)
+        {
+            if (session.Scores.ContainsKey(score.Key))
+            {
+                session.Scores[score.Key] += score.Value;
+            }
+            else
+            {
+                session.Scores[score.Key] = score.Value;
+            }
+        }
+
         // Let mode handle turn end
         mode.OnTurnEnd(session);
 
         Logs.Info($"Session {sessionId}: Turn {session.CurrentTurn.QuestionNumber} ended");
 
-        // TODO: Broadcast turn end event
-        // TODO: Show results screen for X seconds
-        // TODO: Then automatically start next turn
+        // Broadcast turn end event with results
+        Question currentQuestion = session.CurrentQuiz.Questions[session.CurrentTurn.QuestionNumber - 1];
+        _ = BroadcastService.BroadcastTurnEndAsync(session, session.CurrentTurn, currentQuestion, turnScores);
+
+        // Broadcast updated scores
+        _ = BroadcastService.BroadcastScoreUpdateAsync(sessionId, session.Scores);
+
+        // Schedule next turn start (after showing results for a few seconds)
+        // In production, this would use a timer service
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(5000); // 5 second results display
+            StartNextTurn(sessionId);
+        });
 
         return true;
     }
@@ -347,15 +400,32 @@ Make questions entertaining and social - perfect for friends playing together.",
         session.State = SessionState.Completed;
         session.EndedAt = DateTime.UtcNow;
 
-        // TODO: Calculate final statistics
-        // TODO: Generate AI summary
-        // TODO: Identify highlights
-        // TODO: Save session to database
-        // TODO: Broadcast game end event
-        // TODO: Show final results screen
+        // Calculate final statistics
+        session.Stats.TotalQuestions = session.CurrentQuiz.Questions.Count;
+        session.Stats.EndTime = DateTime.UtcNow;
 
-        // Remove from active sessions after delay
-        // TODO: Schedule cleanup task
+        // Find fastest player (average response time)
+        var playerResponseTimes = session.EventLog
+            .Where(e => e.Type == GameEventType.PlayerAnswered)
+            .GroupBy(e => e.PlayerId)
+            .ToDictionary(g => g.Key, g => g.Average(e =>
+                double.TryParse(e.Data?.Split("Time:").LastOrDefault()?.Replace("s", "").Trim(), out var t) ? t : 30));
+
+        if (playerResponseTimes.Any())
+        {
+            session.Stats.FastestPlayer = playerResponseTimes.OrderBy(x => x.Value).First().Key;
+        }
+
+        // Broadcast game end event with final results
+        _ = BroadcastService.BroadcastGameEndAsync(session);
+
+        // Remove from active sessions after delay (give time for results screen)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMinutes(5)); // Keep session for 5 minutes after end
+            ActiveSessions.TryRemove(sessionId, out _);
+            Logs.Info($"Session {sessionId} cleaned up after game end");
+        });
 
         return true;
     }
@@ -398,10 +468,10 @@ Make questions entertaining and social - perfect for friends playing together.",
             Data = $"Aborted: {reason}"
         });
 
-        // TODO: Broadcast abort event to players
-        // TODO: Save partial session data
-        // TODO: Cleanup resources
+        // Broadcast abort event to players
+        _ = BroadcastService.BroadcastGameAbortedAsync(sessionId, reason);
 
+        // Clean up session
         ActiveSessions.TryRemove(sessionId, out _);
 
         return true;

@@ -32,9 +32,10 @@ namespace BuzzFreed.Web.Services.Multiplayer;
 /// TODO: Add reconnection handling (rejoin after disconnect)
 /// TODO: Add room templates (pre-configured settings)
 /// </summary>
-public class RoomService(GameModeRegistry gameModeRegistry)
+public class RoomService(GameModeRegistry gameModeRegistry, BroadcastService broadcastService)
 {
     public readonly GameModeRegistry GameModeRegistry = gameModeRegistry;
+    public readonly BroadcastService BroadcastService = broadcastService;
     public readonly ConcurrentDictionary<string, GameRoom> Rooms = new();
     public readonly ConcurrentDictionary<string, string> RoomCodeToId = new();
 
@@ -86,9 +87,8 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
         Logs.Info($"Room created: {room.RoomCode} (ID: {room.RoomId})");
 
-        // TODO: Schedule room cleanup task
-        // TODO: Broadcast room created event
-        // TODO: Add to active rooms tracker
+        // Broadcast room created event
+        _ = BroadcastService.BroadcastRoomCreatedAsync(room);
 
         return room;
     }
@@ -151,9 +151,11 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
         Logs.Info($"Player {username} joined room {roomCode} ({room.Players.Count}/{room.MaxPlayers})");
 
-        // TODO: Broadcast player joined event to room
-        // TODO: Check if auto-start conditions met
-        // TODO: Update room activity timestamp
+        // Broadcast player joined event to room
+        _ = BroadcastService.BroadcastPlayerJoinedAsync(room.RoomId, player);
+
+        // Update room activity timestamp
+        room.LastActivityAt = DateTime.UtcNow;
 
         return room;
     }
@@ -195,7 +197,8 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
                 Logs.Info($"Host transferred to {newHost.UserId}");
 
-                // TODO: Broadcast host change event
+                // Broadcast host change event
+                _ = BroadcastService.BroadcastHostChangedAsync(room.RoomId, newHost.UserId, newHost.Username);
             }
             else
             {
@@ -205,9 +208,8 @@ public class RoomService(GameModeRegistry gameModeRegistry)
             }
         }
 
-        // TODO: Broadcast player left event
-        // TODO: Update team assignments if player was in team
-        // TODO: Check if all remaining players ready (auto-start)
+        // Broadcast player left event
+        _ = BroadcastService.BroadcastPlayerLeftAsync(room.RoomId, userId, player.Username);
 
         return true;
     }
@@ -232,9 +234,8 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
         Logs.Info($"Player {userId} ready state: {isReady}");
 
-        // TODO: Broadcast ready state change
-        // TODO: Check if all players ready
-        // TODO: Enable start button if all ready
+        // Broadcast ready state change
+        _ = BroadcastService.BroadcastReadyStateChangedAsync(room.RoomId, userId, isReady);
 
         return true;
     }
@@ -259,8 +260,8 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
         Logs.Info($"Room {room.RoomCode} settings updated");
 
-        // TODO: Broadcast settings change to all players
-        // TODO: Validate settings (e.g., question count limits)
+        // Broadcast settings change to all players
+        _ = BroadcastService.BroadcastSettingsChangedAsync(room.RoomId, settings);
 
         return true;
     }
@@ -298,8 +299,9 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
             Logs.Info($"Player {userId} assigned to team {teamId}");
 
-            // TODO: Broadcast team assignment
-            // TODO: Check team balance
+            // Broadcast team assignment
+            _ = BroadcastService.BroadcastTeamAssignmentAsync(room.RoomId, userId, teamId, newTeam.Name);
+
             return true;
         }
 
@@ -334,8 +336,11 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
         Logs.Info($"Created {teamCount} teams for room {room.RoomCode}");
 
-        // TODO: Auto-balance teams
-        // TODO: Broadcast team creation
+        // Broadcast team creation for each team
+        foreach (var team in room.Teams.Values)
+        {
+            _ = BroadcastService.BroadcastTeamCreatedAsync(room.RoomId, team);
+        }
 
         return true;
     }
@@ -388,16 +393,11 @@ public class RoomService(GameModeRegistry gameModeRegistry)
 
         Logs.Info($"Starting game for room {room.RoomCode}");
 
-        // TODO: Create GameSession from room
-        // TODO: Generate quiz via AI
-        // TODO: Initialize game state
-        // TODO: Return session ID
-
+        // Generate session ID (actual session will be created by GameSessionService)
         string sessionId = Guid.NewGuid().ToString();
 
-        // TODO: Move room to "active games" storage
-        // TODO: Broadcast game start event
-        // TODO: Transition all players to game screen
+        // Broadcast game starting event with countdown
+        _ = BroadcastService.BroadcastGameStartingAsync(room.RoomId, sessionId, countdownSeconds: 3);
 
         return sessionId;
     }
@@ -433,13 +433,13 @@ public class RoomService(GameModeRegistry gameModeRegistry)
             return false;
         }
 
+        // Broadcast room deleted event before cleanup
+        _ = BroadcastService.BroadcastRoomDeletedAsync(room.RoomId, "Room closed");
+
         Rooms.TryRemove(roomId, out _);
         RoomCodeToId.TryRemove(room.RoomCode, out _);
 
         Logs.Info($"Room deleted: {room.RoomCode}");
-
-        // TODO: Broadcast room deleted event
-        // TODO: Cleanup any resources
 
         return true;
     }

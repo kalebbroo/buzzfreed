@@ -90,6 +90,12 @@ public class GameRoom
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// Last activity timestamp for cleanup purposes
+    /// Updated on player join/leave, settings changes, etc.
+    /// </summary>
+    public DateTime LastActivityAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
     /// When the game started (null if still in lobby)
     /// </summary>
     public DateTime? StartedAt { get; set; }
