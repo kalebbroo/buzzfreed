@@ -42,7 +42,6 @@ namespace BuzzFreed.Web.Services.Multiplayer;
 /// - Real-time events delegated to EventService
 ///
 /// TODO: Add pause/resume functionality
-/// TODO: Add reconnection handling (player disconnect)
 /// TODO: Add session recording for replays
 /// TODO: Add turn time extension (vote for more time)
 /// </summary>
@@ -769,13 +768,300 @@ Make questions entertaining and social - perfect for friends playing together.",
         return quiz;
     }
 
+    #region Player Connection Management
+
+    /// <summary>
+    /// Handle player disconnection during an active session
+    /// </summary>
+    /// <param name="sessionId">Session ID</param>
+    /// <param name="playerId">Player who disconnected</param>
+    /// <returns>True if handled successfully</returns>
+    public bool HandlePlayerDisconnect(string sessionId, string playerId)
+    {
+        if (!ActiveSessions.TryGetValue(sessionId, out GameSession? session))
+        {
+            Logs.Warning($"HandlePlayerDisconnect: Session not found: {sessionId}");
+            return false;
+        }
+
+        Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId);
+        if (player == null)
+        {
+            Logs.Warning($"HandlePlayerDisconnect: Player {playerId} not in session {sessionId}");
+            return false;
+        }
+
+        // Update player state
+        player.IsConnected = false;
+        player.ConnectionState = PlayerConnectionState.Disconnected;
+        player.DisconnectedAt = DateTime.UtcNow;
+        player.DisconnectCount++;
+
+        Logs.Warning($"Player {player.Username} disconnected from session {sessionId} (disconnect #{player.DisconnectCount})");
+
+        // Log event
+        session.LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerDisconnected,
+            PlayerId = playerId,
+            Data = $"Disconnect #{player.DisconnectCount}"
+        });
+
+        // Broadcast disconnection to other players
+        _ = BroadcastService.BroadcastConnectionStatusAsync(session.RoomId, playerId, isConnected: false);
+
+        // Check if this affects the current turn
+        if (session.CurrentTurn != null && session.CurrentTurn.ActivePlayerId == playerId)
+        {
+            Logs.Warning($"Active player {playerId} disconnected during their turn");
+
+            // Start a grace period timer - if they don't reconnect in 30 seconds, skip their turn
+            TimerService.StartTurnTimer(
+                $"disconnect:{sessionId}:{playerId}",
+                durationSeconds: 30,
+                onTimeout: (sid) => HandleDisconnectTimeout(sessionId, playerId),
+                onWarning: null
+            );
+        }
+
+        // Check if too many players disconnected (game unplayable)
+        int connectedCount = session.Players.Count(p => p.IsConnected);
+        if (connectedCount < 2)
+        {
+            Logs.Warning($"Session {sessionId} has only {connectedCount} connected players - pausing game");
+            // Don't abort immediately, give time for reconnection
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Handle player reconnection to an active session
+    /// </summary>
+    /// <param name="sessionId">Session ID</param>
+    /// <param name="playerId">Player reconnecting</param>
+    /// <param name="connectionId">New SignalR connection ID</param>
+    /// <returns>Session state for the reconnecting player, or null if failed</returns>
+    public ReconnectionResult? HandlePlayerReconnect(string sessionId, string playerId, string? connectionId)
+    {
+        if (!ActiveSessions.TryGetValue(sessionId, out GameSession? session))
+        {
+            Logs.Warning($"HandlePlayerReconnect: Session not found: {sessionId}");
+            return null;
+        }
+
+        Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId);
+        if (player == null)
+        {
+            Logs.Warning($"HandlePlayerReconnect: Player {playerId} not in session {sessionId}");
+            return null;
+        }
+
+        // Check if player was timed out (too many disconnects or too long)
+        if (player.ConnectionState == PlayerConnectionState.TimedOut)
+        {
+            Logs.Warning($"Player {playerId} was timed out and cannot rejoin session {sessionId}");
+            return new ReconnectionResult
+            {
+                Success = false,
+                Reason = "You were removed from the game due to connection issues. You can spectate instead."
+            };
+        }
+
+        // Cancel any pending disconnect timeout
+        TimerService.CancelTimer($"disconnect:{sessionId}:{playerId}");
+
+        // Update player state
+        player.IsConnected = true;
+        player.ConnectionState = PlayerConnectionState.Connected;
+        player.ConnectionId = connectionId;
+        player.UpdateActivity();
+
+        TimeSpan disconnectDuration = player.DisconnectedAt.HasValue
+            ? DateTime.UtcNow - player.DisconnectedAt.Value
+            : TimeSpan.Zero;
+
+        Logs.Info($"Player {player.Username} reconnected to session {sessionId} after {disconnectDuration.TotalSeconds:F1}s");
+
+        // Log event
+        session.LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerReconnected,
+            PlayerId = playerId,
+            Data = $"Reconnected after {disconnectDuration.TotalSeconds:F1}s"
+        });
+
+        // Broadcast reconnection to other players
+        _ = BroadcastService.BroadcastConnectionStatusAsync(session.RoomId, playerId, isConnected: true);
+
+        // Build reconnection result with current game state
+        return new ReconnectionResult
+        {
+            Success = true,
+            Session = session,
+            CurrentTurn = session.CurrentTurn,
+            CurrentQuestion = session.CurrentTurn != null && session.CurrentTurn.QuestionNumber <= session.CurrentQuiz.Questions.Count
+                ? session.CurrentQuiz.Questions[session.CurrentTurn.QuestionNumber - 1]
+                : null,
+            Scores = session.Scores,
+            TimeRemainingSeconds = session.CurrentTurn != null
+                ? TimerService.GetRemainingSeconds(TimerService.GetTurnTimerId(sessionId))
+                : null,
+            MissedTurns = CalculateMissedTurns(session, playerId, player.DisconnectedAt)
+        };
+    }
+
+    /// <summary>
+    /// Handle disconnect timeout - player didn't reconnect in time
+    /// </summary>
+    private void HandleDisconnectTimeout(string sessionId, string playerId)
+    {
+        if (!ActiveSessions.TryGetValue(sessionId, out GameSession? session))
+        {
+            return;
+        }
+
+        Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId);
+        if (player == null || player.IsConnected)
+        {
+            // Player already reconnected or doesn't exist
+            return;
+        }
+
+        Logs.Warning($"Player {playerId} disconnect timeout in session {sessionId}");
+
+        // Check if this was the active player
+        if (session.CurrentTurn != null && session.CurrentTurn.ActivePlayerId == playerId)
+        {
+            // End their turn with timeout (0 points)
+            session.CurrentTurn.TimedOut = true;
+            EndCurrentTurn(sessionId);
+        }
+
+        // If player has disconnected too many times, mark them as timed out
+        if (player.DisconnectCount >= 3)
+        {
+            player.ConnectionState = PlayerConnectionState.TimedOut;
+            Logs.Warning($"Player {playerId} marked as timed out after {player.DisconnectCount} disconnects");
+
+            session.LogEvent(new GameEvent
+            {
+                Type = GameEventType.PlayerTimedOut,
+                PlayerId = playerId,
+                Data = $"Removed after {player.DisconnectCount} disconnects"
+            });
+        }
+    }
+
+    /// <summary>
+    /// Calculate how many turns a player missed while disconnected
+    /// </summary>
+    private int CalculateMissedTurns(GameSession session, string playerId, DateTime? disconnectedAt)
+    {
+        if (!disconnectedAt.HasValue)
+        {
+            return 0;
+        }
+
+        // Count turns that happened after disconnect
+        return session.EventLog
+            .Where(e => e.Type == GameEventType.TurnStarted && e.Timestamp > disconnectedAt.Value)
+            .Count();
+    }
+
+    /// <summary>
+    /// Check if a player can rejoin a session
+    /// </summary>
+    public bool CanPlayerRejoin(string sessionId, string playerId)
+    {
+        if (!ActiveSessions.TryGetValue(sessionId, out GameSession? session))
+        {
+            return false;
+        }
+
+        // Check if session is still active
+        if (session.State != SessionState.Active)
+        {
+            return false;
+        }
+
+        // Check if player was in this session
+        Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId);
+        if (player == null)
+        {
+            return false;
+        }
+
+        // Check if player was timed out
+        if (player.ConnectionState == PlayerConnectionState.TimedOut)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Get session info for a potentially reconnecting player
+    /// </summary>
+    public SessionInfo? GetSessionInfoForPlayer(string playerId)
+    {
+        // Find any active session this player is part of
+        var session = ActiveSessions.Values
+            .FirstOrDefault(s => s.State == SessionState.Active &&
+                                  s.Players.Any(p => p.UserId == playerId));
+
+        if (session == null)
+        {
+            return null;
+        }
+
+        Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId);
+
+        return new SessionInfo
+        {
+            SessionId = session.SessionId,
+            RoomId = session.RoomId,
+            IsConnected = player?.IsConnected ?? false,
+            ConnectionState = player?.ConnectionState ?? PlayerConnectionState.Left,
+            CanRejoin = CanPlayerRejoin(session.SessionId, playerId)
+        };
+    }
+
+    #endregion
+
     // TODO: Add PauseSession() - pause game (vote or host action)
     // TODO: Add ResumeSession() - unpause game
-    // TODO: Add HandlePlayerDisconnect() - track disconnections
-    // TODO: Add HandlePlayerReconnect() - rejoin in progress
     // TODO: Add GetSessionStatistics() - real-time stats for leaderboard
     // TODO: Add GenerateSessionSummary() - AI-generated recap
     // TODO: Add SaveSessionToDatabase() - persist completed sessions
     // TODO: Add LoadSessionFromDatabase() - for replays
     // TODO: Add CleanupOldSessions() - remove expired sessions
+}
+
+/// <summary>
+/// Result of a player reconnection attempt
+/// </summary>
+public class ReconnectionResult
+{
+    public bool Success { get; set; }
+    public string? Reason { get; set; }
+    public GameSession? Session { get; set; }
+    public TurnState? CurrentTurn { get; set; }
+    public Question? CurrentQuestion { get; set; }
+    public Dictionary<string, int>? Scores { get; set; }
+    public int? TimeRemainingSeconds { get; set; }
+    public int MissedTurns { get; set; }
+}
+
+/// <summary>
+/// Basic session info for reconnection checks
+/// </summary>
+public class SessionInfo
+{
+    public string SessionId { get; set; } = string.Empty;
+    public string RoomId { get; set; } = string.Empty;
+    public bool IsConnected { get; set; }
+    public PlayerConnectionState ConnectionState { get; set; }
+    public bool CanRejoin { get; set; }
 }

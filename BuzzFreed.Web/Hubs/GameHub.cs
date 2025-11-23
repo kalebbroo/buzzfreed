@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR;
+using BuzzFreed.Web.Services.Multiplayer;
 using BuzzFreed.Web.Utils;
 
 namespace BuzzFreed.Web.Hubs;
@@ -26,14 +27,21 @@ namespace BuzzFreed.Web.Hubs;
 public class GameHub : Hub
 {
     private readonly ILogger<GameHub> _logger;
+    private readonly GameSessionService _sessionService;
+    private readonly BroadcastService _broadcastService;
 
     // Track connection metadata
     private static readonly Dictionary<string, PlayerConnection> _connections = new();
     private static readonly object _lock = new();
 
-    public GameHub(ILogger<GameHub> logger)
+    public GameHub(
+        ILogger<GameHub> logger,
+        GameSessionService sessionService,
+        BroadcastService broadcastService)
     {
         _logger = logger;
+        _sessionService = sessionService;
+        _broadcastService = broadcastService;
     }
 
     /// <summary>
@@ -49,18 +57,61 @@ public class GameHub : Hub
 
     /// <summary>
     /// Called when a client disconnects from the hub
+    /// Handles graceful disconnection with reconnection support
     /// </summary>
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         string connectionId = Context.ConnectionId;
+        PlayerConnection? connection = null;
 
         lock (_lock)
         {
-            if (_connections.TryGetValue(connectionId, out PlayerConnection? connection))
+            if (_connections.TryGetValue(connectionId, out connection))
             {
                 Logs.Info($"Player {connection.PlayerId} disconnected from room {connection.RoomId}");
                 _connections.Remove(connectionId);
             }
+        }
+
+        // Handle game session disconnection if player was in a session
+        if (connection != null && !string.IsNullOrEmpty(connection.SessionId))
+        {
+            try
+            {
+                // Mark player as disconnected in the game session
+                bool handled = _sessionService.HandlePlayerDisconnect(connection.SessionId, connection.PlayerId);
+
+                if (handled)
+                {
+                    Logs.Info($"Player {connection.PlayerId} disconnection handled for session {connection.SessionId}");
+
+                    // Notify other players in the session
+                    await Clients.Group($"session:{connection.SessionId}").SendAsync("PlayerDisconnected", new
+                    {
+                        playerId = connection.PlayerId,
+                        username = connection.Username,
+                        sessionId = connection.SessionId,
+                        timestamp = DateTime.UtcNow,
+                        message = $"{connection.Username} disconnected. They have 30 seconds to reconnect."
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logs.Error($"Error handling session disconnection: {ex.Message}");
+            }
+        }
+
+        // Notify room if player was in one
+        if (connection != null && !string.IsNullOrEmpty(connection.RoomId))
+        {
+            await Clients.Group($"room:{connection.RoomId}").SendAsync("PlayerDisconnected", new
+            {
+                playerId = connection.PlayerId,
+                username = connection.Username,
+                roomId = connection.RoomId,
+                timestamp = DateTime.UtcNow
+            });
         }
 
         if (exception != null)
@@ -232,6 +283,120 @@ public class GameHub : Hub
             {
                 connection.TeamId = null;
             }
+        }
+    }
+
+    /// <summary>
+    /// Reconnect a player to an active game session
+    /// Called when a player returns after a disconnection
+    /// </summary>
+    public async Task ReconnectToSession(string sessionId, string playerId)
+    {
+        string connectionId = Context.ConnectionId;
+
+        try
+        {
+            // Attempt to reconnect the player in the game session
+            ReconnectionResult? result = _sessionService.HandlePlayerReconnect(sessionId, playerId, connectionId);
+
+            if (result == null || !result.Success)
+            {
+                await Clients.Caller.SendAsync("ReconnectionFailed", new
+                {
+                    sessionId,
+                    playerId,
+                    error = result?.Message ?? "Session not found or cannot rejoin",
+                    canRejoinAsSpectator = result?.CanRejoinAsSpectator ?? false
+                });
+                return;
+            }
+
+            // Re-join the SignalR groups
+            await Groups.AddToGroupAsync(connectionId, $"session:{sessionId}");
+
+            // Update connection tracking
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(connectionId, out PlayerConnection? connection))
+                {
+                    connection.SessionId = sessionId;
+                    Logs.Info($"Player {playerId} reconnected to session: {sessionId}");
+                }
+            }
+
+            // Notify the reconnecting player
+            await Clients.Caller.SendAsync("ReconnectionSuccessful", new
+            {
+                sessionId,
+                playerId,
+                missedTurns = result.MissedTurns,
+                currentTurnNumber = result.CurrentTurnNumber,
+                currentPhase = result.CurrentPhase,
+                timeRemainingMs = result.TimeRemainingMs,
+                message = result.Message
+            });
+
+            // Notify other players in the session
+            PlayerConnection? playerConnection;
+            lock (_lock)
+            {
+                _connections.TryGetValue(connectionId, out playerConnection);
+            }
+
+            await Clients.OthersInGroup($"session:{sessionId}").SendAsync("PlayerReconnected", new
+            {
+                playerId,
+                username = playerConnection?.Username ?? "Unknown",
+                sessionId,
+                timestamp = DateTime.UtcNow,
+                message = $"{playerConnection?.Username ?? "A player"} reconnected!"
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error during session reconnection: {ex.Message}");
+            await Clients.Caller.SendAsync("ReconnectionFailed", new
+            {
+                sessionId,
+                playerId,
+                error = "An error occurred during reconnection"
+            });
+        }
+    }
+
+    /// <summary>
+    /// Check if player has an active session to reconnect to
+    /// Called on app startup/reload
+    /// </summary>
+    public async Task CheckForActiveSession(string playerId)
+    {
+        try
+        {
+            SessionInfo? sessionInfo = _sessionService.GetSessionInfoForPlayer(playerId);
+
+            if (sessionInfo == null)
+            {
+                await Clients.Caller.SendAsync("NoActiveSession", new { playerId });
+                return;
+            }
+
+            await Clients.Caller.SendAsync("ActiveSessionFound", new
+            {
+                playerId,
+                sessionId = sessionInfo.SessionId,
+                roomId = sessionInfo.RoomId,
+                gameMode = sessionInfo.GameMode,
+                state = sessionInfo.State,
+                currentTurn = sessionInfo.CurrentTurn,
+                totalTurns = sessionInfo.TotalTurns,
+                playerCount = sessionInfo.PlayerCount,
+                canRejoin = sessionInfo.CanRejoin
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error checking for active session: {ex.Message}");
+            await Clients.Caller.SendAsync("NoActiveSession", new { playerId, error = ex.Message });
         }
     }
 

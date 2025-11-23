@@ -357,6 +357,8 @@ public enum GameEventType
     PlayerLeft,
     PlayerAnswered,
     PlayerTimedOut,
+    PlayerDisconnected,
+    PlayerReconnected,
 
     // Team actions
     TeamVoteStarted,

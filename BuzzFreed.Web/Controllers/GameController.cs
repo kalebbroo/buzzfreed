@@ -19,9 +19,12 @@ namespace BuzzFreed.Web.Controllers;
 /// - POST /api/game/{sessionId}/suggestion - Submit suggestion
 /// - POST /api/game/{sessionId}/prediction - Submit prediction
 /// - POST /api/game/{sessionId}/chat - Send chat message
+/// - POST /api/game/{sessionId}/reconnect - Reconnect to session
+/// - POST /api/game/{sessionId}/disconnect - Report disconnection
+/// - GET /api/game/{sessionId}/can-rejoin/{playerId} - Check reconnection eligibility
+/// - GET /api/game/find-session/{playerId} - Find player's active session
 ///
 /// TODO: Add pause/resume endpoints
-/// TODO: Add reconnection endpoint
 /// TODO: Add spectator join endpoint
 /// </summary>
 [ApiController]
@@ -355,6 +358,159 @@ public class GameController(
         List<Interaction> interactions = InteractionService.GetTurnInteractions(sessionId, turnId);
         return Ok(interactions);
     }
+
+    /// <summary>
+    /// Reconnect a player to an active game session
+    /// Called when a player returns after a disconnection
+    /// </summary>
+    [HttpPost("{sessionId}/reconnect")]
+    public ActionResult<ReconnectionResponse> ReconnectPlayer(string sessionId, [FromBody] ReconnectRequest request)
+    {
+        try
+        {
+            ReconnectionResult? result = SessionService.HandlePlayerReconnect(
+                sessionId,
+                request.PlayerId,
+                request.ConnectionId
+            );
+
+            if (result == null)
+            {
+                return NotFound(new ReconnectionResponse
+                {
+                    Success = false,
+                    Error = "Session not found or player cannot rejoin"
+                });
+            }
+
+            if (!result.Success)
+            {
+                return BadRequest(new ReconnectionResponse
+                {
+                    Success = false,
+                    Error = result.Message,
+                    CanRejoinAsSpectator = result.CanRejoinAsSpectator
+                });
+            }
+
+            Logs.Info($"Player {request.PlayerId} reconnected to session {sessionId}");
+
+            return Ok(new ReconnectionResponse
+            {
+                Success = true,
+                Message = result.Message,
+                MissedTurns = result.MissedTurns,
+                CurrentTurnNumber = result.CurrentTurnNumber,
+                CurrentPhase = result.CurrentPhase,
+                TimeRemainingMs = result.TimeRemainingMs
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error reconnecting player: {ex.Message}");
+            return StatusCode(500, new ReconnectionResponse { Success = false, Error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Report a player disconnection
+    /// Called by SignalR hub when connection is lost
+    /// </summary>
+    [HttpPost("{sessionId}/disconnect")]
+    public ActionResult<ApiResponse> ReportDisconnection(string sessionId, [FromBody] DisconnectRequest request)
+    {
+        try
+        {
+            bool success = SessionService.HandlePlayerDisconnect(sessionId, request.PlayerId);
+
+            if (!success)
+            {
+                return NotFound(new ApiResponse
+                {
+                    Success = false,
+                    Error = "Session not found or player not in session"
+                });
+            }
+
+            Logs.Info($"Player {request.PlayerId} disconnected from session {sessionId}");
+
+            return Ok(new ApiResponse
+            {
+                Success = true,
+                Message = "Disconnection recorded"
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error reporting disconnection: {ex.Message}");
+            return StatusCode(500, new ApiResponse { Success = false, Error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Check if a player can rejoin a session
+    /// </summary>
+    [HttpGet("{sessionId}/can-rejoin/{playerId}")]
+    public ActionResult<CanRejoinResponse> CanPlayerRejoin(string sessionId, string playerId)
+    {
+        try
+        {
+            bool canRejoin = SessionService.CanPlayerRejoin(sessionId, playerId);
+            GameSession? session = SessionService.GetSession(sessionId);
+
+            return Ok(new CanRejoinResponse
+            {
+                CanRejoin = canRejoin,
+                SessionState = session?.State.ToString(),
+                CurrentTurn = session?.CurrentTurnNumber,
+                TotalTurns = session?.TotalTurns
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error checking rejoin eligibility: {ex.Message}");
+            return StatusCode(500, new CanRejoinResponse { CanRejoin = false });
+        }
+    }
+
+    /// <summary>
+    /// Find a player's active session (for reconnection after app restart)
+    /// </summary>
+    [HttpGet("find-session/{playerId}")]
+    public ActionResult<FindSessionResponse> FindPlayerSession(string playerId)
+    {
+        try
+        {
+            SessionInfo? sessionInfo = SessionService.GetSessionInfoForPlayer(playerId);
+
+            if (sessionInfo == null)
+            {
+                return NotFound(new FindSessionResponse
+                {
+                    Found = false,
+                    Message = "No active session found for player"
+                });
+            }
+
+            return Ok(new FindSessionResponse
+            {
+                Found = true,
+                SessionId = sessionInfo.SessionId,
+                RoomId = sessionInfo.RoomId,
+                GameMode = sessionInfo.GameMode,
+                SessionState = sessionInfo.State,
+                CurrentTurn = sessionInfo.CurrentTurn,
+                TotalTurns = sessionInfo.TotalTurns,
+                PlayerCount = sessionInfo.PlayerCount,
+                CanRejoin = sessionInfo.CanRejoin
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error finding player session: {ex.Message}");
+            return StatusCode(500, new FindSessionResponse { Found = false });
+        }
+    }
 }
 
 // Request DTOs
@@ -408,4 +564,53 @@ public class LeaderboardEntry
     public string PlayerId { get; set; } = string.Empty;
     public string PlayerName { get; set; } = string.Empty;
     public int Score { get; set; }
+}
+
+// Reconnection Request DTOs
+
+public class ReconnectRequest
+{
+    public string PlayerId { get; set; } = string.Empty;
+    public string? ConnectionId { get; set; }
+}
+
+public class DisconnectRequest
+{
+    public string PlayerId { get; set; } = string.Empty;
+}
+
+// Reconnection Response DTOs
+
+public class ReconnectionResponse
+{
+    public bool Success { get; set; }
+    public string? Message { get; set; }
+    public string? Error { get; set; }
+    public int MissedTurns { get; set; }
+    public int CurrentTurnNumber { get; set; }
+    public string? CurrentPhase { get; set; }
+    public int TimeRemainingMs { get; set; }
+    public bool CanRejoinAsSpectator { get; set; }
+}
+
+public class CanRejoinResponse
+{
+    public bool CanRejoin { get; set; }
+    public string? SessionState { get; set; }
+    public int? CurrentTurn { get; set; }
+    public int? TotalTurns { get; set; }
+}
+
+public class FindSessionResponse
+{
+    public bool Found { get; set; }
+    public string? Message { get; set; }
+    public string? SessionId { get; set; }
+    public string? RoomId { get; set; }
+    public string? GameMode { get; set; }
+    public string? SessionState { get; set; }
+    public int CurrentTurn { get; set; }
+    public int TotalTurns { get; set; }
+    public int PlayerCount { get; set; }
+    public bool CanRejoin { get; set; }
 }

@@ -54,11 +54,30 @@ public class Player
     /// <summary>
     /// Is this player currently connected?
     /// Updates in real-time via Discord SDK presence
-    ///
-    /// TODO: Handle reconnection gracefully
-    /// TODO: Add "paused" state if too many disconnects
     /// </summary>
     public bool IsConnected { get; set; } = true;
+
+    /// <summary>
+    /// Current connection state for reconnection handling
+    /// </summary>
+    public PlayerConnectionState ConnectionState { get; set; } = PlayerConnectionState.Connected;
+
+    /// <summary>
+    /// When player last disconnected (null if never disconnected)
+    /// </summary>
+    public DateTime? DisconnectedAt { get; set; }
+
+    /// <summary>
+    /// Number of times this player has disconnected in current session
+    /// Used to detect unstable connections
+    /// </summary>
+    public int DisconnectCount { get; set; } = 0;
+
+    /// <summary>
+    /// SignalR connection ID for direct messaging
+    /// Updated on each reconnect
+    /// </summary>
+    public string? ConnectionId { get; set; }
 
     /// <summary>
     /// Player's total score in current game session
@@ -154,6 +173,39 @@ public enum PlayerRole
     /// Can still react and chat
     /// </summary>
     Spectator
+}
+
+/// <summary>
+/// Player connection states for reconnection handling
+/// </summary>
+public enum PlayerConnectionState
+{
+    /// <summary>
+    /// Player is actively connected
+    /// </summary>
+    Connected,
+
+    /// <summary>
+    /// Player recently disconnected, waiting for reconnect
+    /// Game continues but their turn may be skipped
+    /// </summary>
+    Disconnected,
+
+    /// <summary>
+    /// Player is attempting to reconnect
+    /// </summary>
+    Reconnecting,
+
+    /// <summary>
+    /// Player has been disconnected too long or too many times
+    /// Removed from active gameplay but can rejoin as spectator
+    /// </summary>
+    TimedOut,
+
+    /// <summary>
+    /// Player voluntarily left the game
+    /// </summary>
+    Left
 }
 
 /// <summary>
