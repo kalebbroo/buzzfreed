@@ -489,4 +489,225 @@ public class RoomService(GameModeRegistry gameModeRegistry, BroadcastService bro
     // TODO: Add AutoBalanceTeams() - distribute players evenly
     // TODO: Add ValidateRoomState() - check room integrity
     // TODO: Add RoomActivityTracker - track last activity time
+
+    // Spectator Management
+
+    /// <summary>
+    /// Join a room as a spectator
+    /// Spectators can join even during active games
+    /// </summary>
+    /// <param name="roomCode">6-character room code</param>
+    /// <param name="userId">Discord user ID</param>
+    /// <param name="username">Discord username</param>
+    /// <param name="avatarUrl">Discord avatar URL (optional)</param>
+    /// <returns>Room if joined successfully, null if failed</returns>
+    public GameRoom? JoinRoomAsSpectator(string roomCode, string userId, string username, string? avatarUrl = null)
+    {
+        Logs.Info($"Player {userId} attempting to join room {roomCode} as spectator");
+
+        // Find room by code
+        if (!RoomCodeToId.TryGetValue(roomCode, out string? roomId))
+        {
+            Logs.Warning($"Room code not found: {roomCode}");
+            return null;
+        }
+
+        if (!Rooms.TryGetValue(roomId, out GameRoom? room))
+        {
+            Logs.Error($"Room not found by ID: {roomId}");
+            return null;
+        }
+
+        // Validate spectator join
+        if (room.State == RoomState.Closed)
+        {
+            Logs.Warning($"Cannot spectate room {roomCode} - room is closed");
+            return null;
+        }
+
+        if (!room.CanAcceptSpectators())
+        {
+            Logs.Warning($"Cannot spectate room {roomCode} - spectator limit reached");
+            return null;
+        }
+
+        // Check if already in room as player
+        if (room.HasPlayer(userId))
+        {
+            Logs.Warning($"Player {userId} is already a player in room {roomCode}");
+            return null;
+        }
+
+        // Check if already spectating
+        if (room.IsSpectator(userId))
+        {
+            Logs.Info($"Player {userId} already spectating room {roomCode}");
+            return room;
+        }
+
+        // Create spectator
+        Player spectator = new Player
+        {
+            UserId = userId,
+            Username = username,
+            AvatarUrl = avatarUrl,
+            Role = PlayerRole.Spectator,
+            IsReady = false,
+            IsConnected = true,
+            JoinedAt = DateTime.UtcNow
+        };
+
+        room.Spectators.Add(spectator);
+
+        Logs.Info($"Spectator {username} joined room {roomCode} ({room.Spectators.Count}/{room.MaxSpectators} spectators)");
+
+        // Broadcast spectator joined event
+        _ = BroadcastService.BroadcastSpectatorJoinedAsync(room.RoomId, spectator);
+
+        // Update room activity timestamp
+        room.LastActivityAt = DateTime.UtcNow;
+
+        return room;
+    }
+
+    /// <summary>
+    /// Remove a spectator from a room
+    /// </summary>
+    public bool LeaveSpectator(string roomId, string userId)
+    {
+        if (!Rooms.TryGetValue(roomId, out GameRoom? room))
+        {
+            Logs.Warning($"Room not found: {roomId}");
+            return false;
+        }
+
+        Player? spectator = room.GetSpectator(userId);
+        if (spectator == null)
+        {
+            Logs.Warning($"Spectator {userId} not in room {roomId}");
+            return false;
+        }
+
+        // Remove spectator
+        room.Spectators = new ConcurrentBag<Player>(room.Spectators.Where(s => s.UserId != userId));
+
+        Logs.Info($"Spectator {spectator.Username} left room {room.RoomCode}");
+
+        // Broadcast spectator left event
+        _ = BroadcastService.BroadcastSpectatorLeftAsync(room.RoomId, userId, spectator.Username);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Convert a player to spectator
+    /// Useful when player times out or requests to watch instead
+    /// </summary>
+    public bool ConvertToSpectator(string roomId, string userId)
+    {
+        if (!Rooms.TryGetValue(roomId, out GameRoom? room))
+        {
+            return false;
+        }
+
+        Player? player = room.GetPlayer(userId);
+        if (player == null)
+        {
+            return false;
+        }
+
+        // Cannot convert host
+        if (player.Role == PlayerRole.Host)
+        {
+            Logs.Warning($"Cannot convert host {userId} to spectator");
+            return false;
+        }
+
+        // Remove from players
+        room.Players = new ConcurrentBag<Player>(room.Players.Where(p => p.UserId != userId));
+
+        // Update role and add to spectators
+        player.Role = PlayerRole.Spectator;
+        player.TeamId = null;
+        room.Spectators.Add(player);
+
+        Logs.Info($"Player {player.Username} converted to spectator in room {room.RoomCode}");
+
+        // Broadcast conversion event
+        _ = BroadcastService.BroadcastPlayerConvertedToSpectatorAsync(room.RoomId, userId, player.Username);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Promote a spectator to player
+    /// Only works if room is not full and game hasn't started
+    /// </summary>
+    public bool PromoteSpectatorToPlayer(string roomId, string userId)
+    {
+        if (!Rooms.TryGetValue(roomId, out GameRoom? room))
+        {
+            return false;
+        }
+
+        // Can only promote in lobby
+        if (room.State != RoomState.Lobby)
+        {
+            Logs.Warning($"Cannot promote spectator - game already started");
+            return false;
+        }
+
+        // Check room capacity
+        if (room.IsFull())
+        {
+            Logs.Warning($"Cannot promote spectator - room is full");
+            return false;
+        }
+
+        Player? spectator = room.GetSpectator(userId);
+        if (spectator == null)
+        {
+            Logs.Warning($"Spectator {userId} not found in room {roomId}");
+            return false;
+        }
+
+        // Remove from spectators
+        room.Spectators = new ConcurrentBag<Player>(room.Spectators.Where(s => s.UserId != userId));
+
+        // Update role and add to players
+        spectator.Role = PlayerRole.Player;
+        spectator.IsReady = false;
+        room.Players.Add(spectator);
+
+        Logs.Info($"Spectator {spectator.Username} promoted to player in room {room.RoomCode}");
+
+        // Broadcast promotion event
+        _ = BroadcastService.BroadcastSpectatorPromotedAsync(room.RoomId, userId, spectator.Username);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Get count of spectators in a room
+    /// </summary>
+    public int GetSpectatorCount(string roomId)
+    {
+        if (Rooms.TryGetValue(roomId, out GameRoom? room))
+        {
+            return room.Spectators.Count;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Get all spectators in a room
+    /// </summary>
+    public IEnumerable<Player> GetSpectators(string roomId)
+    {
+        if (Rooms.TryGetValue(roomId, out GameRoom? room))
+        {
+            return room.Spectators.ToList();
+        }
+        return Enumerable.Empty<Player>();
+    }
 }

@@ -17,7 +17,6 @@ namespace BuzzFreed.Web.Models.Multiplayer;
 ///
 /// TODO: Add pause/resume functionality
 /// TODO: Add session recordings for highlight reels
-/// TODO: Implement reconnection handling (rejoin in progress)
 /// </summary>
 public class GameSession
 {
@@ -70,6 +69,17 @@ public class GameSession
     /// Snapshot from room at start time
     /// </summary>
     public List<Player> Players { get; set; } = new();
+
+    /// <summary>
+    /// List of spectators watching this session
+    /// Spectators can join mid-game and interact (react, predict, etc.)
+    /// </summary>
+    public List<Player> Spectators { get; set; } = new();
+
+    /// <summary>
+    /// Maximum number of spectators allowed
+    /// </summary>
+    public int MaxSpectators { get; set; } = 50;
 
     /// <summary>
     /// Teams (if applicable)
@@ -214,6 +224,93 @@ public class GameSession
     // TODO: Add GetPlayerRank(playerId)
     // TODO: Add GetHighlightMoments() - funny/interesting events
     // TODO: Add ExportResults() for sharing
+
+    // Spectator methods
+
+    /// <summary>
+    /// Check if spectator list is full
+    /// </summary>
+    public bool IsSpectatorsFull() => Spectators.Count >= MaxSpectators;
+
+    /// <summary>
+    /// Get spectator by user ID
+    /// </summary>
+    public Player? GetSpectator(string userId) =>
+        Spectators.FirstOrDefault(s => s.UserId == userId);
+
+    /// <summary>
+    /// Check if user is a spectator
+    /// </summary>
+    public bool IsSpectator(string userId) =>
+        Spectators.Any(s => s.UserId == userId);
+
+    /// <summary>
+    /// Check if user is in session (as player or spectator)
+    /// </summary>
+    public bool IsInSession(string userId) =>
+        Players.Any(p => p.UserId == userId) || IsSpectator(userId);
+
+    /// <summary>
+    /// Add a spectator to the session
+    /// </summary>
+    public bool AddSpectator(Player spectator)
+    {
+        if (IsSpectatorsFull() || IsInSession(spectator.UserId))
+            return false;
+
+        spectator.Role = PlayerRole.Spectator;
+        Spectators.Add(spectator);
+
+        LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerJoined,
+            PlayerId = spectator.UserId,
+            Data = "Joined as spectator"
+        });
+
+        return true;
+    }
+
+    /// <summary>
+    /// Remove a spectator from the session
+    /// </summary>
+    public bool RemoveSpectator(string userId)
+    {
+        Player? spectator = GetSpectator(userId);
+        if (spectator == null) return false;
+
+        Spectators.Remove(spectator);
+
+        LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerLeft,
+            PlayerId = userId,
+            Data = "Spectator left"
+        });
+
+        return true;
+    }
+
+    /// <summary>
+    /// Get all participants (players + spectators)
+    /// </summary>
+    public IEnumerable<Player> GetAllParticipants() =>
+        Players.Concat(Spectators);
+
+    /// <summary>
+    /// Total participant count
+    /// </summary>
+    public int TotalParticipants => Players.Count + Spectators.Count;
+
+    /// <summary>
+    /// Current turn number for external reference
+    /// </summary>
+    public int CurrentTurnNumber => CurrentTurn?.QuestionNumber ?? 0;
+
+    /// <summary>
+    /// Total turns in the session
+    /// </summary>
+    public int TotalTurns => CurrentQuiz?.Questions?.Count ?? 0;
 }
 
 /// <summary>

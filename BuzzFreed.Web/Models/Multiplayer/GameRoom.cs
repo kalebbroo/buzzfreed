@@ -45,9 +45,21 @@ public class GameRoom
     /// Thread-safe for concurrent join/leave operations
     ///
     /// TODO: Consider max players per room (8-12 suggested)
-    /// TODO: Add player roles (Host, Captain, Regular)
     /// </summary>
     public ConcurrentBag<Player> Players { get; set; } = new();
+
+    /// <summary>
+    /// List of spectators watching the game
+    /// Spectators can react and chat but cannot participate
+    /// Thread-safe for concurrent join/leave operations
+    /// </summary>
+    public ConcurrentBag<Player> Spectators { get; set; } = new();
+
+    /// <summary>
+    /// Maximum number of spectators allowed in this room
+    /// Higher limit than players since spectators don't affect gameplay
+    /// </summary>
+    public int MaxSpectators { get; set; } = 50;
 
     /// <summary>
     /// Maximum number of players allowed in this room
@@ -134,6 +146,52 @@ public class GameRoom
     // TODO: Add GetOpponents(playerId)
     // TODO: Add IsTeamMode()
     // TODO: Add GetActiveTeam() for turn-based team modes
+
+    // Spectator methods
+
+    /// <summary>
+    /// Check if spectator list is full
+    /// </summary>
+    public bool IsSpectatorsFull() => Spectators.Count >= MaxSpectators;
+
+    /// <summary>
+    /// Get spectator by user ID
+    /// </summary>
+    public Player? GetSpectator(string userId) =>
+        Spectators.FirstOrDefault(s => s.UserId == userId);
+
+    /// <summary>
+    /// Check if user is a spectator
+    /// </summary>
+    public bool IsSpectator(string userId) =>
+        Spectators.Any(s => s.UserId == userId);
+
+    /// <summary>
+    /// Check if user is in room (as player or spectator)
+    /// </summary>
+    public bool IsInRoom(string userId) =>
+        HasPlayer(userId) || IsSpectator(userId);
+
+    /// <summary>
+    /// Get all participants (players + spectators)
+    /// </summary>
+    public IEnumerable<Player> GetAllParticipants() =>
+        Players.Concat(Spectators);
+
+    /// <summary>
+    /// Total participant count (players + spectators)
+    /// </summary>
+    public int TotalParticipants => Players.Count + Spectators.Count;
+
+    /// <summary>
+    /// Get count of active players (excluding spectators)
+    /// </summary>
+    public int ActivePlayerCount => Players.Count(p => p.Role != PlayerRole.Spectator);
+
+    /// <summary>
+    /// Check if room can accept spectators
+    /// </summary>
+    public bool CanAcceptSpectators() => !IsSpectatorsFull() && State != RoomState.Closed;
 }
 
 /// <summary>
@@ -149,7 +207,7 @@ public enum RoomState
 
     /// <summary>
     /// Game is actively being played
-    /// No new players can join (TODO: Add spectator mode)
+    /// No new players can join, but spectators can watch
     /// </summary>
     InProgress,
 

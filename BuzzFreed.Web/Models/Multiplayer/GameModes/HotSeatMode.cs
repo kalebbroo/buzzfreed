@@ -29,7 +29,7 @@ namespace BuzzFreed.Web.Models.Multiplayer.GameModes;
 /// - Streak bonus: 10 points per question in streak
 ///
 /// TODO: Add "pressure mode" - timer decreases each turn
-/// TODO: Add "steal" mechanic - spectators can steal question if player times out
+/// TODO: Add "steal" mechanic - spectators can steal question if player times out (implemented as spectator action)
 /// TODO: Add confidence system - bet points on answer
 /// </summary>
 public class HotSeatMode : IGameMode
@@ -389,6 +389,40 @@ public class HotSeatMode : IGameMode
                 "reaction-burst-animation", // Animate reactions
                 "streak-indicator" // Show current streak
             }
+        };
+    }
+
+    /// <summary>
+    /// Get available spectator actions for Hot Seat mode
+    /// Spectators can react and predict during question phase
+    /// </summary>
+    public SpectatorActions GetSpectatorActions(GameSession session, TurnPhase phase)
+    {
+        return phase switch
+        {
+            TurnPhase.Question => new SpectatorActions
+            {
+                CanReact = true,
+                CanSuggest = true, // Hot Seat allows suggestions
+                CanPredict = true, // Spectators can predict what player will answer
+                CanChat = true,
+                CanUsePowerUps = false,
+                MaxSuggestions = 1,
+                MaxReactions = 3,
+                PhaseMessage = "Send suggestions or predict what they'll answer!"
+            },
+            TurnPhase.Results => new SpectatorActions
+            {
+                CanReact = true,
+                CanSuggest = false,
+                CanPredict = false,
+                CanChat = true,
+                CanUsePowerUps = false,
+                MaxReactions = 5, // Allow more reactions during reveal
+                PhaseMessage = "React to the answer!"
+            },
+            TurnPhase.Waiting => SpectatorActions.ForWaitingPhase(),
+            _ => SpectatorActions.Default
         };
     }
 

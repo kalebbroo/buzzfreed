@@ -23,9 +23,12 @@ namespace BuzzFreed.Web.Controllers;
 /// - POST /api/game/{sessionId}/disconnect - Report disconnection
 /// - GET /api/game/{sessionId}/can-rejoin/{playerId} - Check reconnection eligibility
 /// - GET /api/game/find-session/{playerId} - Find player's active session
+/// - POST /api/game/{sessionId}/spectate - Join as spectator
+/// - POST /api/game/{sessionId}/leave-spectate - Leave as spectator
+/// - GET /api/game/{sessionId}/spectators - Get spectator list
+/// - GET /api/game/{sessionId}/spectator-actions - Get available spectator actions
 ///
 /// TODO: Add pause/resume endpoints
-/// TODO: Add spectator join endpoint
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -511,6 +514,219 @@ public class GameController(
             return StatusCode(500, new FindSessionResponse { Found = false });
         }
     }
+
+    // Spectator Endpoints
+
+    /// <summary>
+    /// Join a game session as a spectator
+    /// Spectators can watch and interact but not participate
+    /// </summary>
+    [HttpPost("{sessionId}/spectate")]
+    public ActionResult<SpectateResponse> JoinAsSpectator(string sessionId, [FromBody] SpectateRequest request)
+    {
+        try
+        {
+            GameSession? session = SessionService.GetSession(sessionId);
+
+            if (session == null)
+            {
+                return NotFound(new SpectateResponse
+                {
+                    Success = false,
+                    Error = "Session not found"
+                });
+            }
+
+            // Check if already in session as player
+            if (session.Players.Any(p => p.UserId == request.UserId))
+            {
+                return BadRequest(new SpectateResponse
+                {
+                    Success = false,
+                    Error = "Already participating as a player"
+                });
+            }
+
+            // Check if already spectating
+            if (session.IsSpectator(request.UserId))
+            {
+                return Ok(new SpectateResponse
+                {
+                    Success = true,
+                    Message = "Already spectating",
+                    SpectatorCount = session.Spectators.Count
+                });
+            }
+
+            // Create spectator player
+            Player spectator = new Player
+            {
+                UserId = request.UserId,
+                Username = request.Username,
+                AvatarUrl = request.AvatarUrl,
+                Role = PlayerRole.Spectator,
+                IsConnected = true,
+                JoinedAt = DateTime.UtcNow
+            };
+
+            bool added = session.AddSpectator(spectator);
+
+            if (!added)
+            {
+                return BadRequest(new SpectateResponse
+                {
+                    Success = false,
+                    Error = "Unable to join as spectator (session full or closed)"
+                });
+            }
+
+            Logs.Info($"Spectator {request.Username} joined session {sessionId}");
+
+            return Ok(new SpectateResponse
+            {
+                Success = true,
+                Message = "Joined as spectator",
+                SpectatorCount = session.Spectators.Count,
+                CurrentTurn = session.CurrentTurnNumber,
+                TotalTurns = session.TotalTurns,
+                SessionState = session.State.ToString()
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error joining as spectator: {ex.Message}");
+            return StatusCode(500, new SpectateResponse { Success = false, Error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Leave a game session as a spectator
+    /// </summary>
+    [HttpPost("{sessionId}/leave-spectate")]
+    public ActionResult<ApiResponse> LeaveAsSpectator(string sessionId, [FromBody] LeaveSpectateRequest request)
+    {
+        try
+        {
+            GameSession? session = SessionService.GetSession(sessionId);
+
+            if (session == null)
+            {
+                return NotFound(new ApiResponse
+                {
+                    Success = false,
+                    Error = "Session not found"
+                });
+            }
+
+            bool removed = session.RemoveSpectator(request.UserId);
+
+            if (!removed)
+            {
+                return NotFound(new ApiResponse
+                {
+                    Success = false,
+                    Error = "Not a spectator in this session"
+                });
+            }
+
+            Logs.Info($"Spectator {request.UserId} left session {sessionId}");
+
+            return Ok(new ApiResponse
+            {
+                Success = true,
+                Message = "Left as spectator"
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error leaving as spectator: {ex.Message}");
+            return StatusCode(500, new ApiResponse { Success = false, Error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get list of spectators in a session
+    /// </summary>
+    [HttpGet("{sessionId}/spectators")]
+    public ActionResult<SpectatorListResponse> GetSpectators(string sessionId)
+    {
+        try
+        {
+            GameSession? session = SessionService.GetSession(sessionId);
+
+            if (session == null)
+            {
+                return NotFound(new SpectatorListResponse
+                {
+                    Spectators = new List<SpectatorInfo>()
+                });
+            }
+
+            List<SpectatorInfo> spectators = session.Spectators
+                .Select(s => new SpectatorInfo
+                {
+                    UserId = s.UserId,
+                    Username = s.Username,
+                    AvatarUrl = s.AvatarUrl,
+                    JoinedAt = s.JoinedAt
+                })
+                .ToList();
+
+            return Ok(new SpectatorListResponse
+            {
+                SessionId = sessionId,
+                Spectators = spectators,
+                TotalCount = spectators.Count,
+                MaxSpectators = session.MaxSpectators
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error getting spectators: {ex.Message}");
+            return StatusCode(500, new SpectatorListResponse { Spectators = new List<SpectatorInfo>() });
+        }
+    }
+
+    /// <summary>
+    /// Get available spectator actions for current game state
+    /// </summary>
+    [HttpGet("{sessionId}/spectator-actions")]
+    public ActionResult<SpectatorActionsResponse> GetSpectatorActions(string sessionId)
+    {
+        try
+        {
+            GameSession? session = SessionService.GetSession(sessionId);
+
+            if (session == null)
+            {
+                return NotFound(new SpectatorActionsResponse
+                {
+                    AvailableActions = new List<string>()
+                });
+            }
+
+            // Determine available actions based on game state
+            List<string> actions = new() { "react", "predict", "chat" };
+
+            if (session.CurrentTurn?.Phase == TurnPhase.Question)
+            {
+                actions.Add("suggest");
+            }
+
+            return Ok(new SpectatorActionsResponse
+            {
+                SessionId = sessionId,
+                CurrentPhase = session.CurrentTurn?.Phase.ToString() ?? "Waiting",
+                AvailableActions = actions,
+                ReactionTypes = Enum.GetNames<ReactionType>().ToList()
+            });
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Error getting spectator actions: {ex.Message}");
+            return StatusCode(500, new SpectatorActionsResponse { AvailableActions = new List<string>() });
+        }
+    }
 }
 
 // Request DTOs
@@ -613,4 +829,55 @@ public class FindSessionResponse
     public int TotalTurns { get; set; }
     public int PlayerCount { get; set; }
     public bool CanRejoin { get; set; }
+}
+
+// Spectator Request DTOs
+
+public class SpectateRequest
+{
+    public string UserId { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string? AvatarUrl { get; set; }
+}
+
+public class LeaveSpectateRequest
+{
+    public string UserId { get; set; } = string.Empty;
+}
+
+// Spectator Response DTOs
+
+public class SpectateResponse
+{
+    public bool Success { get; set; }
+    public string? Message { get; set; }
+    public string? Error { get; set; }
+    public int SpectatorCount { get; set; }
+    public int CurrentTurn { get; set; }
+    public int TotalTurns { get; set; }
+    public string? SessionState { get; set; }
+}
+
+public class SpectatorListResponse
+{
+    public string? SessionId { get; set; }
+    public List<SpectatorInfo> Spectators { get; set; } = new();
+    public int TotalCount { get; set; }
+    public int MaxSpectators { get; set; }
+}
+
+public class SpectatorInfo
+{
+    public string UserId { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string? AvatarUrl { get; set; }
+    public DateTime JoinedAt { get; set; }
+}
+
+public class SpectatorActionsResponse
+{
+    public string? SessionId { get; set; }
+    public string? CurrentPhase { get; set; }
+    public List<string> AvailableActions { get; set; } = new();
+    public List<string> ReactionTypes { get; set; } = new();
 }

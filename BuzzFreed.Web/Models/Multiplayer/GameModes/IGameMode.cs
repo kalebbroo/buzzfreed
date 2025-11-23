@@ -141,8 +141,16 @@ public interface IGameMode
     /// <returns>UI configuration for this mode</returns>
     GameModeUIConfig GetUIConfig();
 
+    /// <summary>
+    /// Get available actions for spectators based on current game phase
+    /// Different modes may allow different spectator interactions
+    /// </summary>
+    /// <param name="session">Current game session</param>
+    /// <param name="phase">Current turn phase</param>
+    /// <returns>List of available spectator actions</returns>
+    SpectatorActions GetSpectatorActions(GameSession session, TurnPhase phase);
+
     // TODO: Add ValidateInteraction(type, playerId) - check if interaction allowed
-    // TODO: Add GetSpectatorActions() - what can non-active players do?
     // TODO: Add OnPowerUpUsed() for sabotage mode
     // TODO: Add GetTimeLimitForTurn() - mode-specific timing
 }
@@ -250,6 +258,97 @@ public class GameModeUIConfig
     public List<string> CustomUIElements { get; set; } = new();
 
     // TODO: Add LayoutType (single-player-focus, grid-view, team-split, etc.)
-    // TODO: Add SpectatorViewType (reactions-only, full-interaction, etc.)
     // TODO: Add ResultsDisplayType (individual, team, combined, etc.)
+}
+
+/// <summary>
+/// Available actions for spectators based on game mode and phase
+/// </summary>
+public class SpectatorActions
+{
+    /// <summary>
+    /// Can spectators send reactions?
+    /// </summary>
+    public bool CanReact { get; set; } = true;
+
+    /// <summary>
+    /// Can spectators send suggestions to active player?
+    /// </summary>
+    public bool CanSuggest { get; set; } = false;
+
+    /// <summary>
+    /// Can spectators make predictions?
+    /// </summary>
+    public bool CanPredict { get; set; } = false;
+
+    /// <summary>
+    /// Can spectators chat?
+    /// </summary>
+    public bool CanChat { get; set; } = true;
+
+    /// <summary>
+    /// Can spectators use power-ups? (in certain modes)
+    /// </summary>
+    public bool CanUsePowerUps { get; set; } = false;
+
+    /// <summary>
+    /// Available reaction types for this phase
+    /// </summary>
+    public List<string> AvailableReactions { get; set; } = new() { "Funny", "Thinking", "Shocked", "Nice", "Nah", "Smart", "Fire", "Dead" };
+
+    /// <summary>
+    /// Maximum suggestions allowed per turn
+    /// </summary>
+    public int MaxSuggestions { get; set; } = 1;
+
+    /// <summary>
+    /// Maximum reactions allowed per turn
+    /// </summary>
+    public int MaxReactions { get; set; } = 3;
+
+    /// <summary>
+    /// Message to display to spectators
+    /// </summary>
+    public string? PhaseMessage { get; set; }
+
+    /// <summary>
+    /// Static helper to create default spectator actions
+    /// </summary>
+    public static SpectatorActions Default => new();
+
+    /// <summary>
+    /// Create spectator actions for question phase
+    /// </summary>
+    public static SpectatorActions ForQuestionPhase(bool allowSuggestions = true, bool allowPredictions = true) => new()
+    {
+        CanReact = true,
+        CanSuggest = allowSuggestions,
+        CanPredict = allowPredictions,
+        CanChat = true,
+        PhaseMessage = "Watch and interact while the player answers!"
+    };
+
+    /// <summary>
+    /// Create spectator actions for results phase
+    /// </summary>
+    public static SpectatorActions ForResultsPhase() => new()
+    {
+        CanReact = true,
+        CanSuggest = false,
+        CanPredict = false,
+        CanChat = true,
+        PhaseMessage = "See how the player did!"
+    };
+
+    /// <summary>
+    /// Create spectator actions for waiting phase
+    /// </summary>
+    public static SpectatorActions ForWaitingPhase() => new()
+    {
+        CanReact = false,
+        CanSuggest = false,
+        CanPredict = false,
+        CanChat = true,
+        PhaseMessage = "Get ready for the next question..."
+    };
 }

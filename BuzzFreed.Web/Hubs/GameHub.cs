@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR;
+using BuzzFreed.Web.Models.Multiplayer;
 using BuzzFreed.Web.Services.Multiplayer;
 using BuzzFreed.Web.Utils;
 
@@ -499,6 +500,184 @@ public class GameHub : Hub
             return _connections.Values.Any(c => c.PlayerId == playerId);
         }
     }
+
+    // Spectator Methods
+
+    /// <summary>
+    /// Join a session as a spectator
+    /// Spectators can watch and interact but not participate
+    /// </summary>
+    public async Task JoinAsSpectator(string sessionId, string playerId, string username, string? avatarUrl)
+    {
+        string connectionId = Context.ConnectionId;
+
+        // Try to add spectator to the session
+        GameSession? session = _sessionService.GetSession(sessionId);
+        if (session == null)
+        {
+            await Clients.Caller.SendAsync("SpectatorJoinFailed", new
+            {
+                sessionId,
+                error = "Session not found"
+            });
+            return;
+        }
+
+        // Check if already a player
+        if (session.Players.Any(p => p.UserId == playerId))
+        {
+            await Clients.Caller.SendAsync("SpectatorJoinFailed", new
+            {
+                sessionId,
+                error = "Already participating as a player"
+            });
+            return;
+        }
+
+        // Create spectator
+        Player spectator = new Player
+        {
+            UserId = playerId,
+            Username = username,
+            AvatarUrl = avatarUrl,
+            Role = PlayerRole.Spectator,
+            IsConnected = true,
+            ConnectionId = connectionId,
+            JoinedAt = DateTime.UtcNow
+        };
+
+        bool added = session.AddSpectator(spectator);
+        if (!added)
+        {
+            await Clients.Caller.SendAsync("SpectatorJoinFailed", new
+            {
+                sessionId,
+                error = "Unable to join as spectator (session full)"
+            });
+            return;
+        }
+
+        // Join SignalR group
+        await Groups.AddToGroupAsync(connectionId, $"session:{sessionId}");
+        await Groups.AddToGroupAsync(connectionId, $"spectators:{sessionId}");
+
+        // Update connection tracking
+        lock (_lock)
+        {
+            if (_connections.TryGetValue(connectionId, out PlayerConnection? connection))
+            {
+                connection.SessionId = sessionId;
+                connection.IsSpectator = true;
+                Logs.Info($"Spectator {username} joined session: {sessionId}");
+            }
+            else
+            {
+                // Create new connection if not registered
+                _connections[connectionId] = new PlayerConnection
+                {
+                    ConnectionId = connectionId,
+                    PlayerId = playerId,
+                    Username = username,
+                    AvatarUrl = avatarUrl,
+                    SessionId = sessionId,
+                    IsSpectator = true,
+                    ConnectedAt = DateTime.UtcNow
+                };
+            }
+        }
+
+        // Notify the spectator
+        await Clients.Caller.SendAsync("SpectatorJoinSuccessful", new
+        {
+            sessionId,
+            spectatorCount = session.Spectators.Count,
+            currentTurn = session.CurrentTurnNumber,
+            totalTurns = session.TotalTurns,
+            sessionState = session.State.ToString()
+        });
+
+        // Notify other participants
+        await Clients.OthersInGroup($"session:{sessionId}").SendAsync("SpectatorJoined", new
+        {
+            playerId,
+            username,
+            avatarUrl,
+            sessionId,
+            spectatorCount = session.Spectators.Count,
+            timestamp = DateTime.UtcNow
+        });
+
+        // Broadcast via BroadcastService
+        await _broadcastService.BroadcastSessionSpectatorJoinedAsync(sessionId, spectator);
+    }
+
+    /// <summary>
+    /// Leave a session as a spectator
+    /// </summary>
+    public async Task LeaveAsSpectator(string sessionId)
+    {
+        string connectionId = Context.ConnectionId;
+        PlayerConnection? connection;
+
+        lock (_lock)
+        {
+            _connections.TryGetValue(connectionId, out connection);
+        }
+
+        if (connection == null || !connection.IsSpectator)
+        {
+            return;
+        }
+
+        // Remove from session
+        GameSession? session = _sessionService.GetSession(sessionId);
+        if (session != null)
+        {
+            session.RemoveSpectator(connection.PlayerId);
+        }
+
+        // Leave SignalR groups
+        await Groups.RemoveFromGroupAsync(connectionId, $"session:{sessionId}");
+        await Groups.RemoveFromGroupAsync(connectionId, $"spectators:{sessionId}");
+
+        // Update connection tracking
+        lock (_lock)
+        {
+            if (_connections.TryGetValue(connectionId, out connection))
+            {
+                connection.SessionId = null;
+                connection.IsSpectator = false;
+            }
+        }
+
+        // Notify other participants
+        await Clients.Group($"session:{sessionId}").SendAsync("SpectatorLeft", new
+        {
+            playerId = connection?.PlayerId,
+            username = connection?.Username,
+            sessionId,
+            spectatorCount = session?.Spectators.Count ?? 0,
+            timestamp = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Get count of spectators in a session
+    /// </summary>
+    public int GetSpectatorCount(string sessionId)
+    {
+        GameSession? session = _sessionService.GetSession(sessionId);
+        return session?.Spectators.Count ?? 0;
+    }
+
+    /// <summary>
+    /// Check if a user is spectating a session
+    /// </summary>
+    public bool IsSpectating(string sessionId, string playerId)
+    {
+        GameSession? session = _sessionService.GetSession(sessionId);
+        return session?.IsSpectator(playerId) ?? false;
+    }
 }
 
 /// <summary>
@@ -513,6 +692,7 @@ public class PlayerConnection
     public string? RoomId { get; set; }
     public string? SessionId { get; set; }
     public string? TeamId { get; set; }
+    public bool IsSpectator { get; set; } = false;
     public DateTime ConnectedAt { get; set; }
     public DateTime LastActivityAt { get; set; } = DateTime.UtcNow;
 }

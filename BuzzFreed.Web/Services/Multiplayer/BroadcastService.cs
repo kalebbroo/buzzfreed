@@ -757,6 +757,158 @@ public class BroadcastService
     }
 
     #endregion
+
+    #region Spectator Events
+
+    /// <summary>
+    /// Broadcast when a spectator joins the room
+    /// </summary>
+    public async Task BroadcastSpectatorJoinedAsync(string roomId, Player spectator)
+    {
+        try
+        {
+            await _hubContext.Clients.Group($"room:{roomId}").SendAsync("SpectatorJoined", new
+            {
+                roomId,
+                spectator = new
+                {
+                    userId = spectator.UserId,
+                    username = spectator.Username,
+                    avatarUrl = spectator.AvatarUrl,
+                    role = "Spectator"
+                },
+                timestamp = DateTime.UtcNow
+            });
+
+            Logs.Debug($"Broadcast: Spectator {spectator.Username} joined room {roomId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast spectator joined event");
+        }
+    }
+
+    /// <summary>
+    /// Broadcast when a spectator leaves the room
+    /// </summary>
+    public async Task BroadcastSpectatorLeftAsync(string roomId, string spectatorId, string username)
+    {
+        try
+        {
+            await _hubContext.Clients.Group($"room:{roomId}").SendAsync("SpectatorLeft", new
+            {
+                roomId,
+                spectatorId,
+                username,
+                timestamp = DateTime.UtcNow
+            });
+
+            Logs.Debug($"Broadcast: Spectator {username} left room {roomId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast spectator left event");
+        }
+    }
+
+    /// <summary>
+    /// Broadcast when a player is converted to spectator
+    /// </summary>
+    public async Task BroadcastPlayerConvertedToSpectatorAsync(string roomId, string playerId, string username)
+    {
+        try
+        {
+            await _hubContext.Clients.Group($"room:{roomId}").SendAsync("PlayerConvertedToSpectator", new
+            {
+                roomId,
+                playerId,
+                username,
+                message = $"{username} is now watching as a spectator",
+                timestamp = DateTime.UtcNow
+            });
+
+            Logs.Debug($"Broadcast: Player {username} converted to spectator in room {roomId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast player converted to spectator event");
+        }
+    }
+
+    /// <summary>
+    /// Broadcast when a spectator is promoted to player
+    /// </summary>
+    public async Task BroadcastSpectatorPromotedAsync(string roomId, string playerId, string username)
+    {
+        try
+        {
+            await _hubContext.Clients.Group($"room:{roomId}").SendAsync("SpectatorPromoted", new
+            {
+                roomId,
+                playerId,
+                username,
+                message = $"{username} has joined as a player!",
+                timestamp = DateTime.UtcNow
+            });
+
+            Logs.Debug($"Broadcast: Spectator {username} promoted to player in room {roomId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast spectator promoted event");
+        }
+    }
+
+    /// <summary>
+    /// Broadcast spectator count update
+    /// </summary>
+    public async Task BroadcastSpectatorCountAsync(string roomId, int spectatorCount)
+    {
+        try
+        {
+            await _hubContext.Clients.Group($"room:{roomId}").SendAsync("SpectatorCount", new
+            {
+                roomId,
+                spectatorCount,
+                timestamp = DateTime.UtcNow
+            });
+
+            Logs.Debug($"Broadcast: Spectator count={spectatorCount} in room {roomId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast spectator count event");
+        }
+    }
+
+    /// <summary>
+    /// Broadcast when a spectator joins a session mid-game
+    /// </summary>
+    public async Task BroadcastSessionSpectatorJoinedAsync(string sessionId, Player spectator)
+    {
+        try
+        {
+            await _hubContext.Clients.Group($"session:{sessionId}").SendAsync("SessionSpectatorJoined", new
+            {
+                sessionId,
+                spectator = new
+                {
+                    userId = spectator.UserId,
+                    username = spectator.Username,
+                    avatarUrl = spectator.AvatarUrl
+                },
+                timestamp = DateTime.UtcNow
+            });
+
+            Logs.Debug($"Broadcast: Spectator {spectator.Username} joined session {sessionId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to broadcast session spectator joined event");
+        }
+    }
+
+    #endregion
 }
 
 /// <summary>
