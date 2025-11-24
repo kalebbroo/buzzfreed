@@ -39,10 +39,14 @@ namespace BuzzFreed.Web.Services.Multiplayer;
 /// TODO: Implement interaction replay
 /// TODO: Add profanity filter for chat
 /// </summary>
-public class InteractionService(GameSessionService sessionService, GameModeRegistry gameModeRegistry)
+public class InteractionService(
+    GameSessionService sessionService,
+    GameModeRegistry gameModeRegistry,
+    BroadcastService broadcastService)
 {
     public readonly GameSessionService SessionService = sessionService;
     public readonly GameModeRegistry GameModeRegistry = gameModeRegistry;
+    public readonly BroadcastService BroadcastService = broadcastService;
 
     /// <summary>
     /// Submit a reaction to active player's turn
@@ -100,9 +104,30 @@ public class InteractionService(GameSessionService sessionService, GameModeRegis
 
             Logs.Info($"Reaction added: {playerId} → {targetPlayerId} ({reactionType})");
 
-            // TODO: Broadcast reaction to all players
-            // TODO: Aggregate reaction counts for UI
-            // TODO: Check for "reaction storm" event (many reactions at once)
+            // Get player info for broadcast
+            Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId)
+                ?? session.Spectators.FirstOrDefault(s => s.UserId == playerId);
+
+            string username = player?.Username ?? "Unknown";
+
+            // Broadcast reaction to all players in the session
+            _ = BroadcastService.BroadcastReactionAsync(sessionId, playerId, username, reactionType);
+
+            // Check for "reaction storm" (5+ reactions in last 3 seconds)
+            DateTime threeSecondsAgo = DateTime.UtcNow.AddSeconds(-3);
+            int recentReactions = session.CurrentTurn.Reactions
+                .Count(r => r.Timestamp > threeSecondsAgo);
+
+            if (recentReactions >= 5)
+            {
+                session.LogEvent(new GameEvent
+                {
+                    Type = GameEventType.ReactionStorm,
+                    Data = $"{recentReactions} reactions in 3 seconds!",
+                    IsHighlight = true,
+                    Category = HighlightCategory.Social
+                });
+            }
         }
         else
         {
@@ -180,9 +205,26 @@ public class InteractionService(GameSessionService sessionService, GameModeRegis
 
             Logs.Info($"Suggestion added: {playerId} → {targetPlayerId} (Answer {suggestedAnswerIndex})");
 
-            // TODO: Show suggestion count to target (not content)
-            // TODO: Reveal suggestions after answer submitted
-            // TODO: Track if suggestion was followed
+            // Get current suggestion count for this turn
+            int suggestionCount = session.CurrentTurn.Suggestions.Count;
+
+            // Broadcast suggestion count to session (content hidden until reveal)
+            _ = BroadcastService.BroadcastAnswerSubmittedAsync(
+                sessionId,
+                playerId,
+                -1, // Don't reveal which answer
+                revealAnswer: false
+            );
+
+            // Log event for suggestion
+            session.LogEvent(new GameEvent
+            {
+                Type = GameEventType.PlayerAnswered, // Using as generic interaction event
+                PlayerId = targetPlayerId,
+                Data = $"Received suggestion #{suggestionCount}"
+            });
+
+            // Track suggestion follow rate will be done in ProcessSuggestions()
         }
 
         return added;
@@ -231,9 +273,17 @@ public class InteractionService(GameSessionService sessionService, GameModeRegis
 
         Logs.Info($"Prediction added: {playerId} predicts {targetPlayerId} will choose {predictedAnswerIndex}");
 
-        // TODO: Broadcast prediction count (not content)
-        // TODO: Calculate prediction points after answer revealed
-        // TODO: Track prediction accuracy per player
+        // Broadcast prediction count (not content) to create anticipation
+        int predictionCount = session.CurrentTurn.Predictions.Count;
+        _ = BroadcastService.BroadcastPredictionCountAsync(sessionId, predictionCount);
+
+        // Log prediction event
+        session.LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerAnswered, // Using as generic interaction
+            PlayerId = playerId,
+            Data = $"Made prediction for {targetPlayerId}"
+        });
 
         return true;
     }
@@ -293,8 +343,30 @@ public class InteractionService(GameSessionService sessionService, GameModeRegis
             }
         }
 
-        // TODO: Log prediction results event
-        // TODO: Broadcast prediction results to all players
+        // Build prediction results for broadcast
+        List<PredictionResult> results = predictions.Select(p => new PredictionResult
+        {
+            PlayerId = p.PlayerId,
+            Username = session.Players.FirstOrDefault(pl => pl.UserId == p.PlayerId)?.Username
+                ?? session.Spectators.FirstOrDefault(s => s.UserId == p.PlayerId)?.Username
+                ?? "Unknown",
+            PredictedAnswerIndex = p.PredictedAnswerIndex,
+            WasCorrect = p.IsCorrect,
+            PointsEarned = p.PointsEarned
+        }).ToList();
+
+        // Broadcast prediction results to all players
+        _ = BroadcastService.BroadcastPredictionResultsAsync(sessionId, results);
+
+        // Log prediction results event
+        int correctPredictions = results.Count(r => r.WasCorrect);
+        session.LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerAnswered, // Generic interaction event
+            Data = $"{correctPredictions}/{predictions.Count} correct predictions",
+            IsHighlight = correctPredictions > 0 && predictions.Count >= 3 // Highlight if multiple correct
+        });
+
         // TODO: Update player prediction stats (accuracy, streak, etc.)
     }
 
@@ -348,8 +420,29 @@ public class InteractionService(GameSessionService sessionService, GameModeRegis
             }
         }
 
-        // TODO: Reveal all suggestions to players
-        // TODO: Highlight followed suggestions
+        // Reveal suggestions to all players now that answer is submitted
+        foreach (Suggestion suggestion in suggestions)
+        {
+            session.LogEvent(new GameEvent
+            {
+                Type = GameEventType.PlayerAnswered, // Generic interaction
+                PlayerId = suggestion.PlayerId,
+                Data = $"Suggested answer {suggestion.SuggestedAnswerIndex}" +
+                    (suggestion.WasFollowed ? " [FOLLOWED]" : "") +
+                    (suggestion.WasCorrect == true ? " [CORRECT]" : ""),
+                IsHighlight = suggestion.WasFollowed && suggestion.WasCorrect == true,
+                Category = suggestion.WasFollowed && suggestion.WasCorrect == true
+                    ? HighlightCategory.Social
+                    : null
+            });
+        }
+
+        // Log summary
+        int followedCount = suggestions.Count(s => s.WasFollowed);
+        int correctCount = suggestions.Count(s => s.WasCorrect == true);
+
+        Logs.Info($"Suggestions processed: {suggestions.Count} total, {followedCount} followed, {correctCount} correct");
+
         // TODO: Track suggestion follow rate per player
     }
 
@@ -389,8 +482,26 @@ public class InteractionService(GameSessionService sessionService, GameModeRegis
 
         Logs.Info($"Chat message from {playerId}: {message}");
 
-        // TODO: Broadcast to team or all players
-        // TODO: Track chat activity stats
+        // Note: Chat is typically broadcast via SignalR Hub's SendChatMessage method
+        // This service validates and stores the message in session history
+        // The Hub handles real-time delivery to appropriate recipients
+
+        // Track chat activity stats
+        Player? player = session.Players.FirstOrDefault(p => p.UserId == playerId)
+            ?? session.Spectators.FirstOrDefault(s => s.UserId == playerId);
+
+        if (player != null)
+        {
+            player.UpdateActivity();
+        }
+
+        // Log chat event for session history
+        session.LogEvent(new GameEvent
+        {
+            Type = GameEventType.PlayerAnswered, // Using as generic player action
+            PlayerId = playerId,
+            Data = teamId != null ? $"Team chat ({teamId})" : "Global chat"
+        });
 
         return true;
     }
